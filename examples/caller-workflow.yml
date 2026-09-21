@@ -1,0 +1,38 @@
+name: T3Planet AI Bot
+
+on:
+  issues:
+    types: [opened, labeled]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  resolve:
+    if: |
+      (
+        github.event_name == 'issues' &&
+        github.event.action == 'opened'
+      ) ||
+      (
+        github.event_name == 'issues' &&
+        github.event.action == 'labeled' &&
+        github.event.label.name == 't3planet-ai'
+      ) ||
+      (
+        github.event_name == 'issue_comment' &&
+        !github.event.issue.pull_request &&
+        github.event.comment.user.type != 'Bot' &&
+        contains(github.event.issue.labels.*.name, 'needs-information')
+      )
+    # Prefer a release tag (e.g. @v1.0.0) over @main in production.
+    uses: nitsan-technologies/t3planet-ai-bot/.github/workflows/issue-resolver.yml@main
+    secrets:
+      CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+    with:
+      bot_ref: main
+      base_branch: main

@@ -1,0 +1,29 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(**/*)",
+      "Write(**/*)",
+      "Shell(ls)",
+      "Shell(find)",
+      "Shell(grep)",
+      "Shell(rg)",
+      "Shell(cat)",
+      "Shell(head)",
+      "Shell(tail)",
+      "Shell(php)",
+      "Shell(composer)",
+      "Shell(vendor/bin/phpunit)",
+      "Shell(phpunit)"
+    ],
+    "deny": [
+      "Shell(git)",
+      "Shell(gh)",
+      "Shell(curl)",
+      "Shell(wget)",
+      "Read(.env*)",
+      "Write(.env*)",
+      "Write(**/*.key)",
+      "Write(**/*credential*)"
+    ]
+  }
+}

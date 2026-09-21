@@ -1,0 +1,515 @@
+name: T3Planet AI Bot
+
+on:
+  workflow_call:
+    inputs:
+      bot_ref:
+        description: Git ref of nitsan-technologies/t3planet-ai-bot used to load scripts
+        type: string
+        required: false
+        default: main
+      base_branch:
+        description: Default branch of the calling repository
+        type: string
+        required: false
+        default: main
+      cursor_agent_version:
+        description: Pinned Cursor agent CLI lab version (downloads.cursor.com/lab/<version>/...)
+        type: string
+        required: false
+        default: "2026.08.25-3e8eec8"
+    secrets:
+      CURSOR_API_KEY:
+        required: true
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: t3planet-ai-bot-${{ github.repository }}-${{ github.event.issue.number }}
+  cancel-in-progress: true
+
+jobs:
+  resolve:
+    name: Analyze and Resolve Issue
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      PYTHONDONTWRITEBYTECODE: 1
+      BOT_SCRIPTS: /tmp/t3planet-ai-bot/scripts/issue_triage
+
+    steps:
+      - name: Checkout caller repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+
+      - name: Checkout T3Planet AI Bot
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: nitsan-technologies/t3planet-ai-bot
+          ref: ${{ inputs.bot_ref }}
+          path: _t3planet_ai_bot
+
+      - name: Prepare bot tools
+        run: |
+          mkdir -p /tmp/t3planet-ai-bot/.cursor
+          cp -a _t3planet_ai_bot/scripts /tmp/t3planet-ai-bot/scripts
+          cp _t3planet_ai_bot/AGENTS.md /tmp/t3planet-ai-bot/AGENTS.md
+          chmod +x /tmp/t3planet-ai-bot/scripts/issue_triage/*.sh
+
+          # Always use the bot sandbox in CI. Consumer .cursor/cli.json is ignored
+          # so a weaker allow-list cannot remove git/gh/curl denials.
+          cp _t3planet_ai_bot/.cursor/cli.json /tmp/t3planet-ai-bot/.cursor/cli.json
+
+          mkdir -p .cursor
+          cp /tmp/t3planet-ai-bot/.cursor/cli.json .cursor/cli.json
+
+          # Keep bot checkout out of the caller workspace / commits
+          rm -rf _t3planet_ai_bot
+
+      - name: Guard Cursor API key
+        env:
+          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+        run: |
+          if [ -z "${CURSOR_API_KEY}" ]; then
+            echo "CURSOR_API_KEY secret is not set."
+            printf '%s\n' "guard" > /tmp/cursor-stage.txt
+            echo "CURSOR_STAGE=guard" >> "$GITHUB_ENV"
+            exit 1
+          fi
+
+      - name: Install Cursor CLI
+        env:
+          CURSOR_AGENT_VERSION: ${{ inputs.cursor_agent_version }}
+        run: |
+          set -euo pipefail
+          VERSION="${CURSOR_AGENT_VERSION}"
+          ARCH="$(uname -m)"
+          case "${ARCH}" in
+            x86_64|amd64) ARCH="x64" ;;
+            aarch64|arm64) ARCH="arm64" ;;
+            *)
+              echo "Unsupported architecture: ${ARCH}"
+              exit 1
+              ;;
+          esac
+
+          DOWNLOAD_URL="https://downloads.cursor.com/lab/${VERSION}/linux/${ARCH}/agent-cli-package.tar.gz"
+          INSTALL_DIR="${HOME}/.local/share/cursor-agent/versions/${VERSION}"
+          BIN_DIR="${HOME}/.cursor/bin"
+          ARCHIVE="/tmp/cursor-agent-${VERSION}-${ARCH}.tar.gz"
+
+          # Known SHA-256 for the default pinned build (linux/x64).
+          # Bump this when changing cursor_agent_version for x64 runners.
+          EXPECTED_SHA_X64="7a212e5a17ff9316f5acc78808e33c536940d5455645022e6388d99ba48c8425"
+
+          mkdir -p "${INSTALL_DIR}" "${BIN_DIR}"
+          curl -fsSL "${DOWNLOAD_URL}" -o "${ARCHIVE}"
+
+          if [ "${ARCH}" = "x64" ] && [ "${VERSION}" = "2026.08.25-3e8eec8" ]; then
+            ACTUAL_SHA="$(sha256sum "${ARCHIVE}" | awk '{print $1}')"
+            if [ "${ACTUAL_SHA}" != "${EXPECTED_SHA_X64}" ]; then
+              echo "Cursor CLI checksum mismatch."
+              echo "expected: ${EXPECTED_SHA_X64}"
+              echo "actual:   ${ACTUAL_SHA}"
+              exit 1
+            fi
+            echo "Cursor CLI checksum OK."
+          else
+            echo "WARNING: No pinned checksum for ${VERSION}/${ARCH}; installing without verification."
+          fi
+
+          tar --strip-components=1 -xzf "${ARCHIVE}" -C "${INSTALL_DIR}"
+          ln -sfn "${INSTALL_DIR}/cursor-agent" "${BIN_DIR}/cursor-agent"
+          echo "${BIN_DIR}" >> "$GITHUB_PATH"
+          "${BIN_DIR}/cursor-agent" --version
+
+      - name: Collect Issue Context
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          gh api \
+            --paginate \
+            "repos/${{ github.repository }}/issues/${ISSUE_NUMBER}/comments?per_page=100" \
+            > /tmp/issue-comments.json
+
+      - name: Triage Issue
+        env:
+          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          EVENT_NAME: ${{ github.event_name }}
+          CURRENT_COMMENT: ${{ github.event.comment.body }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          python3 "${BOT_SCRIPTS}/build_triage_prompt.py"
+
+          bash "${BOT_SCRIPTS}/run_cursor.sh" \
+            triage \
+            /tmp/triage-prompt.txt \
+            /tmp/triage-result.txt
+
+          bash "${BOT_SCRIPTS}/detect_result.sh" /tmp/triage-result.txt
+
+      - name: Comment Triage Result
+        if: env.RESULT != 'VALID_ISSUE'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          python3 "${BOT_SCRIPTS}/format_triage_comment.py"
+
+          gh issue comment "$ISSUE_NUMBER" \
+            --repo "${{ github.repository }}" \
+            --body-file /tmp/issue-comment.md
+
+      - name: Add Needs Information Label
+        if: env.RESULT == 'NEEDS_INFORMATION'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          if ! gh label list \
+            --repo "${{ github.repository }}" \
+            --limit 100 \
+            --json name \
+            --jq '.[].name' | grep -Fxq "needs-information"; then
+            gh label create "needs-information" \
+              --repo "${{ github.repository }}" \
+              --color "FBCA04" \
+              --description "T3Planet AI Bot is waiting for more information"
+          fi
+
+          gh issue edit "$ISSUE_NUMBER" \
+            --repo "${{ github.repository }}" \
+            --add-label "needs-information"
+
+      - name: Remove Needs Information Label
+        if: |
+          env.RESULT == 'VALID_ISSUE' ||
+          env.RESULT == 'NOT_AN_ISSUE' ||
+          env.RESULT == 'REVIEW_REQUIRED'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          gh issue edit "$ISSUE_NUMBER" \
+            --repo "${{ github.repository }}" \
+            --remove-label "needs-information" || true
+
+      - name: Reset Triage Changes
+        if: env.RESULT == 'VALID_ISSUE'
+        run: |
+          git reset --hard HEAD
+          git clean -fd
+          mkdir -p .cursor
+          cp /tmp/t3planet-ai-bot/.cursor/cli.json .cursor/cli.json
+
+      - name: Check Existing Pull Request
+        if: env.RESULT == 'VALID_ISSUE'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          BRANCH_NAME="ai/fix-issue-${ISSUE_NUMBER}"
+          echo "BRANCH_NAME=${BRANCH_NAME}" >> "$GITHUB_ENV"
+
+          EXISTING_PR=$(
+            gh pr list \
+              --repo "${{ github.repository }}" \
+              --head "${BRANCH_NAME}" \
+              --state open \
+              --json url \
+              --jq '.[0].url // empty'
+          )
+
+          if [ -n "$EXISTING_PR" ]; then
+            echo "PR_ALREADY_EXISTS=true" >> "$GITHUB_ENV"
+            echo "PR_URL=${EXISTING_PR}" >> "$GITHUB_ENV"
+          else
+            echo "PR_ALREADY_EXISTS=false" >> "$GITHUB_ENV"
+          fi
+
+      - name: Comment Existing Pull Request
+        if: |
+          env.RESULT == 'VALID_ISSUE' &&
+          env.PR_ALREADY_EXISTS == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          cat > /tmp/existing-pr-comment.md <<EOF
+          <img src="https://raw.githubusercontent.com/nitsan-technologies/t3planet-ai-bot/main/assets/bot-icon.png" width="22" height="22" align="absmiddle" alt="" /> <strong>T3Planet AI Bot</strong>
+
+          This issue already has a draft pull request: ${PR_URL}
+          EOF
+
+          gh issue comment "$ISSUE_NUMBER" \
+            --repo "${{ github.repository }}" \
+            --body-file /tmp/existing-pr-comment.md
+
+      - name: Create Issue Branch
+        if: |
+          env.RESULT == 'VALID_ISSUE' &&
+          env.PR_ALREADY_EXISTS != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          BASE_BRANCH: ${{ inputs.base_branch }}
+        run: |
+          git config user.name "T3Planet AI Bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git fetch origin "${BASE_BRANCH}"
+          git fetch origin "${BRANCH_NAME}" || true
+
+          if git show-ref --verify --quiet "refs/remotes/origin/${BRANCH_NAME}"; then
+            cat > /tmp/branch-exists-comment.md <<EOF
+          <img src="https://raw.githubusercontent.com/nitsan-technologies/t3planet-ai-bot/main/assets/bot-icon.png" width="22" height="22" align="absmiddle" alt="" /> <strong>T3Planet AI Bot</strong>
+
+          Branch \`${BRANCH_NAME}\` already exists on the remote, but there is no open pull request.
+
+          Refusing to overwrite it. Delete or reopen that branch/PR, then re-run the workflow.
+          EOF
+
+            gh issue comment "$ISSUE_NUMBER" \
+              --repo "${{ github.repository }}" \
+              --body-file /tmp/branch-exists-comment.md
+
+            echo "FAILURE_ALREADY_COMMENTED=true" >> "$GITHUB_ENV"
+            exit 1
+          fi
+
+          git checkout -B "${BRANCH_NAME}" "origin/${BASE_BRANCH}"
+
+      - name: Resolve Issue with Cursor
+        if: |
+          env.RESULT == 'VALID_ISSUE' &&
+          env.PR_ALREADY_EXISTS != 'true'
+        env:
+          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          python3 "${BOT_SCRIPTS}/build_resolve_prompt.py"
+
+          bash "${BOT_SCRIPTS}/run_cursor.sh" \
+            resolve \
+            /tmp/resolve-prompt.txt \
+            /tmp/resolve-result.txt
+
+      - name: Check Changes
+        if: |
+          env.RESULT == 'VALID_ISSUE' &&
+          env.PR_ALREADY_EXISTS != 'true'
+        id: changes
+        run: |
+          find . -name .DS_Store -type f -delete 2>/dev/null || true
+          find . -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null || true
+          find . -name '*.pyc' -type f -delete 2>/dev/null || true
+
+          # Bot sandbox is restored into the worktree for Cursor; it is not a product change.
+          rm -rf .cursor
+
+          git status --short
+
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          git diff --stat
+
+      - name: Comment - No Code Change Required
+        if: |
+          env.RESULT == 'VALID_ISSUE' &&
+          env.PR_ALREADY_EXISTS != 'true' &&
+          steps.changes.outputs.has_changes == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          cat > /tmp/no-change-comment.md <<EOF
+          <img src="https://raw.githubusercontent.com/nitsan-technologies/t3planet-ai-bot/main/assets/bot-icon.png" width="22" height="22" align="absmiddle" alt="" /> <strong>T3Planet AI Bot</strong>
+
+          No solution source changes were produced for this issue.
+
+          No Pull Request was created.
+          EOF
+
+          gh issue comment "$ISSUE_NUMBER" \
+            --repo "${{ github.repository }}" \
+            --body-file /tmp/no-change-comment.md
+
+      - name: Verify Test Report
+        if: |
+          env.RESULT == 'VALID_ISSUE' &&
+          env.PR_ALREADY_EXISTS != 'true' &&
+          steps.changes.outputs.has_changes == 'true'
+        run: |
+          bash "${BOT_SCRIPTS}/verify_test_report.sh" /tmp/resolve-result.txt
+
+      - name: Run Existing Project Tests
+        if: |
+          env.RESULT == 'VALID_ISSUE' &&
+          env.PR_ALREADY_EXISTS != 'true' &&
+          steps.changes.outputs.has_changes == 'true'
+        id: project_tests
+        run: |
+          set +e
+          bash "${BOT_SCRIPTS}/run_existing_project_tests.sh"
+          TEST_EXIT=$?
+          set -e
+
+          if [ "$TEST_EXIT" -ne 0 ]; then
+            cat > /tmp/project-tests-failed-comment.md <<EOF
+          <img src="https://raw.githubusercontent.com/nitsan-technologies/t3planet-ai-bot/main/assets/bot-icon.png" width="22" height="22" align="absmiddle" alt="" /> <strong>T3Planet AI Bot</strong>
+
+          Existing project tests were reviewed and did not pass (or could not be executed).
+
+          \`\`\`
+          $(cat /tmp/project-test-status.txt 2>/dev/null || true)
+          \`\`\`
+
+          No Pull Request was created.
+          EOF
+
+            gh issue comment "${{ github.event.issue.number }}" \
+              --repo "${{ github.repository }}" \
+              --body-file /tmp/project-tests-failed-comment.md
+
+            echo "FAILURE_ALREADY_COMMENTED=true" >> "$GITHUB_ENV"
+            exit 1
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Commit Changes
+        if: |
+          env.RESULT == 'VALID_ISSUE' &&
+          env.PR_ALREADY_EXISTS != 'true' &&
+          steps.changes.outputs.has_changes == 'true'
+        id: commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set +e
+          bash "${BOT_SCRIPTS}/stage_solution_files.sh"
+          STAGE_EXIT=$?
+          set -e
+
+          if [ "$STAGE_EXIT" -eq 2 ]; then
+            cat > /tmp/unexpected-files-comment.md <<EOF
+          <img src="https://raw.githubusercontent.com/nitsan-technologies/t3planet-ai-bot/main/assets/bot-icon.png" width="22" height="22" align="absmiddle" alt="" /> <strong>T3Planet AI Bot</strong>
+
+          The automated fix produced files that must not be committed:
+
+          \`\`\`
+          $(cat /tmp/dangerous-files.txt 2>/dev/null || true)
+          \`\`\`
+
+          No Pull Request was created.
+          EOF
+
+            gh issue comment "$ISSUE_NUMBER" \
+              --repo "${{ github.repository }}" \
+              --body-file /tmp/unexpected-files-comment.md
+
+            echo "FAILURE_ALREADY_COMMENTED=true" >> "$GITHUB_ENV"
+            exit 1
+          fi
+
+          if [ -z "$(git diff --cached --name-only)" ]; then
+            echo "has_solution_changes=false" >> "$GITHUB_OUTPUT"
+
+            cat > /tmp/no-solution-comment.md <<EOF
+          <img src="https://raw.githubusercontent.com/nitsan-technologies/t3planet-ai-bot/main/assets/bot-icon.png" width="22" height="22" align="absmiddle" alt="" /> <strong>T3Planet AI Bot</strong>
+
+          Only non-solution files were produced (for example tests, smoke scripts, or \`.gitignore\`). Those files are not pushed.
+
+          No Pull Request was created.
+          EOF
+
+            gh issue comment "$ISSUE_NUMBER" \
+              --repo "${{ github.repository }}" \
+              --body-file /tmp/no-solution-comment.md
+
+            exit 0
+          fi
+
+          echo "has_solution_changes=true" >> "$GITHUB_OUTPUT"
+          git commit -m "Fix issue #${{ github.event.issue.number }}"
+
+      - name: Push Issue Branch
+        if: |
+          env.RESULT == 'VALID_ISSUE' &&
+          env.PR_ALREADY_EXISTS != 'true' &&
+          steps.changes.outputs.has_changes == 'true' &&
+          steps.commit.outputs.has_solution_changes == 'true'
+        run: |
+          git push --set-upstream origin "${BRANCH_NAME}"
+
+      - name: Create Draft Pull Request
+        if: |
+          env.RESULT == 'VALID_ISSUE' &&
+          env.PR_ALREADY_EXISTS != 'true' &&
+          steps.changes.outputs.has_changes == 'true' &&
+          steps.commit.outputs.has_solution_changes == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          BASE_BRANCH: ${{ inputs.base_branch }}
+        run: |
+          python3 "${BOT_SCRIPTS}/format_pr_body.py"
+
+          # Title comes from a file so ISSUE_TITLE is never expanded by bash.
+          PR_URL=$(gh pr create \
+            --repo "${{ github.repository }}" \
+            --base "${BASE_BRANCH}" \
+            --head "${BRANCH_NAME}" \
+            --title "$(cat /tmp/pr-title.txt)" \
+            --body-file /tmp/pr-body.md \
+            --draft)
+
+          echo "PR_URL=${PR_URL}" >> "$GITHUB_ENV"
+
+      - name: Comment Pull Request on Issue
+        if: |
+          env.RESULT == 'VALID_ISSUE' &&
+          env.PR_ALREADY_EXISTS != 'true' &&
+          steps.changes.outputs.has_changes == 'true' &&
+          steps.commit.outputs.has_solution_changes == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          python3 "${BOT_SCRIPTS}/format_pr_issue_comment.py"
+
+          gh issue comment "$ISSUE_NUMBER" \
+            --repo "${{ github.repository }}" \
+            --body-file /tmp/pr-comment.md
+
+      - name: Comment Failure
+        if: |
+          failure() &&
+          env.FAILURE_ALREADY_COMMENTED != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          GITHUB_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python3 "${BOT_SCRIPTS}/format_failure_comment.py"
+
+          gh issue comment "$ISSUE_NUMBER" \
+            --repo "${{ github.repository }}" \
+            --body-file /tmp/failure-comment.md
