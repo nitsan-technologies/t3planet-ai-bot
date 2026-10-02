@@ -7,9 +7,9 @@ T3Planet AI Bot reviews GitHub Issues with Cursor, classifies them, asks for mis
 1. Someone opens an issue (or a collaborator adds the `t3planet-ai` label, or a user replies on an issue labeled `needs-information`).
 2. The bot **triages** the issue: `VALID_ISSUE`, `NOT_AN_ISSUE`, or `NEEDS_INFORMATION`. If the AI answer has no clear classification, the result is `REVIEW_REQUIRED` and no fix is attempted.
 3. For a valid issue, it implements a minimal fix on branch `ai/fix-issue-<number>` and opens a **draft PR**.
-4. A human reviews and merges. The bot does not merge PRs.
+4. A human reviews and merges. The bot does not merge PRs. Review and approval happen on the GitHub pull request.
 
-ClickUp tracking is optional and **off by default**. The GitHub flow above does not call ClickUp unless you enable it. See [Optional ClickUp tracking](#optional-clickup-tracking).
+ClickUp tracking is optional and **off by default**. It only copies status into ClickUp after GitHub has already finished. It never approves, blocks, or changes the AI run. See [Optional ClickUp tracking](#optional-clickup-tracking).
 
 **Contents:** [Requirements](#requirements) · [Setup](#setup) · [When the bot runs](#when-the-bot-runs) · [Optional ClickUp tracking](#optional-clickup-tracking) · [Privacy and data](#privacy-and-data) · [Troubleshooting](#troubleshooting) · [Versioning](#versioning-tags) · [Inputs](#inputs) · [Secrets](#secrets)
 
@@ -117,7 +117,15 @@ ClickUp is **off** unless you turn it on. With the default settings the bot neve
 
 ClickUp tracking is not part of `v1.0.0`. Use a release that includes it (from `v1.1.0`), or `@main` while testing.
 
-When you enable it, GitHub stays the source of truth and ClickUp only mirrors progress. One GitHub issue maps to one ClickUp task. The bot finds that task only inside the configured list, by:
+ClickUp is a **status board only**:
+
+- The bot writes a task, a status (In Progress or Done), a comment, and optional assignees. That is the whole integration.
+- It never asks for approval in ClickUp, never waits for a ClickUp status, and never reads ClickUp back.
+- Changing, reassigning, or closing a task in ClickUp does nothing to GitHub. Review and merge stay on the pull request.
+- The AI job does not know ClickUp exists. It finishes first, on its own runner. The ClickUp job starts afterwards, on a fresh runner, with read-only GitHub permissions.
+- A ClickUp error, timeout, or missing setting is logged and ignored. It does not fail the workflow, hide an AI result, or block a pull request. Pull request events use a separate job, so they cannot cancel an AI run.
+
+When you enable it, GitHub stays the source of truth. One GitHub issue maps to one ClickUp task. The bot finds that task only inside the configured list, by:
 
 - the task name prefix `[gh:<owner>/<repo>#<number>]`, or
 - a marker line in the task description, `t3planet-github-issue:<owner>/<repo>#<number>`
@@ -269,7 +277,7 @@ Set `clickup_enabled` to `false`, or stop passing it. You do not need a ClickUp 
 | Log: `skipped assignees that are not workspace members` | The email is not the person's ClickUp login, or they are not a member. Check **Settings → People** in ClickUp. |
 | No ClickUp comment for the bot's own draft pull request | Expected. GitHub does not trigger workflows for pull requests opened with the workflow token. The link is added by the issue run. |
 
-A green run does not prove ClickUp worked. ClickUp errors never fail the job, so check the **Sync ClickUp tracking** job log.
+A green run does not prove ClickUp worked. ClickUp errors are logged and the run stays successful when the AI job succeeded, so check the **Sync ClickUp tracking** job log.
 
 ## Tests
 

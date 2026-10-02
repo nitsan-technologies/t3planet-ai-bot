@@ -42,6 +42,8 @@ concurrency:
 jobs:
   sync:
     name: Sync ClickUp tracking
+    # A ClickUp failure must not fail the caller workflow or a required check.
+    continue-on-error: true
     if: contains(fromJSON('["true","True","TRUE","1","yes","on"]'), inputs.clickup_enabled)
     runs-on: ubuntu-latest
     timeout-minutes: 10

@@ -162,7 +162,10 @@ def test_wiring():
     check("wiring:token-not-in-ai-job", "CLICKUP" not in resolve_job and "clickup_hook" not in resolve_job)
     check("wiring:clickup-job-needs-resolve", "needs: resolve" in clickup_job and "!cancelled()" in clickup_job)
     check("wiring:clickup-job-read-only", "contents: read" in clickup_job and "write" not in clickup_job)
-    check("wiring:clickup-job-continue", "continue-on-error: true" in clickup_job and "run-summary" in clickup_job)
+    check("wiring:clickup-job-continue", "\n    continue-on-error: true\n" in "\n" + clickup_job
+          and "run-summary" in clickup_job)
+    check("wiring:sync-job-continue", "\n    continue-on-error: true\n" in "\n" + job_block(sync, "sync"))
+    check("wiring:ai-job-has-no-clickup-need", "needs:" not in resolve_job)
     check("wiring:export-always", "id: summary" in resolve_job and "export_run_summary.py" in resolve_job)
     check("wiring:default-off", 'default: "false"' in resolver.split("clickup_enabled:", 1)[1][:300])
     check("wiring:resolver-not-pr-triggered", "pull_request:" not in resolver.split("jobs:", 1)[0])

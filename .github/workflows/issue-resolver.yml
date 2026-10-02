@@ -554,11 +554,12 @@ jobs:
         continue-on-error: true
         run: python3 "${BOT_SCRIPTS}/export_run_summary.py"
 
-  # Runs on a fresh runner so the ClickUp token never shares a machine with the
-  # AI agent. Inputs from the resolve job are validated before use.
+  # Status mirror only. It starts after the AI job and never feeds anything
+  # back. continue-on-error keeps a ClickUp failure from failing the AI run.
   clickup:
     name: Sync ClickUp tracking
     needs: resolve
+    continue-on-error: true
     if: |
       !cancelled() &&
       contains(fromJSON('["true","True","TRUE","1","yes","on"]'), inputs.clickup_enabled)
