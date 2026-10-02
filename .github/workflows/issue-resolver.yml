@@ -18,9 +18,30 @@ on:
         type: string
         required: false
         default: "2026.08.25-3e8eec8"
+      clickup_enabled:
+        description: Set to true to mirror the run outcome into ClickUp. Off unless explicitly enabled.
+        type: string
+        required: false
+        default: "false"
+      clickup_team_id:
+        description: ClickUp workspace (team) id. Used only when clickup_enabled is true.
+        type: string
+        required: false
+        default: ""
+      clickup_list_id:
+        description: ClickUp list id. Used only when clickup_enabled is true.
+        type: string
+        required: false
+        default: ""
     secrets:
       CURSOR_API_KEY:
         required: true
+      CLICKUP_API_TOKEN:
+        required: false
+      CLICKUP_TEAM_ID:
+        required: false
+      CLICKUP_LIST_ID:
+        required: false
 
 permissions:
   contents: write
@@ -36,6 +57,12 @@ jobs:
     name: Analyze and Resolve Issue
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    outputs:
+      result: ${{ steps.summary.outputs.result }}
+      branch: ${{ steps.summary.outputs.branch }}
+      pr_url: ${{ steps.summary.outputs.pr_url }}
+      pr_already_exists: ${{ steps.summary.outputs.pr_already_exists }}
+      triage_summary: ${{ steps.summary.outputs.triage_summary }}
     env:
       PYTHONDONTWRITEBYTECODE: 1
       BOT_SCRIPTS: /tmp/t3planet-ai-bot/scripts/issue_triage
@@ -513,3 +540,49 @@ jobs:
           gh issue comment "$ISSUE_NUMBER" \
             --repo "${{ github.repository }}" \
             --body-file /tmp/failure-comment.md
+
+      - name: Export run summary
+        id: summary
+        if: always()
+        continue-on-error: true
+        run: python3 "${BOT_SCRIPTS}/export_run_summary.py"
+
+  # Runs on a fresh runner so the ClickUp token never shares a machine with the
+  # AI agent. Inputs from the resolve job are validated before use.
+  clickup:
+    name: Sync ClickUp tracking
+    needs: resolve
+    if: |
+      !cancelled() &&
+      contains(fromJSON('["true","True","TRUE","1","yes","on"]'), inputs.clickup_enabled)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout T3Planet AI Bot
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: nitsan-technologies/t3planet-ai-bot
+          ref: ${{ inputs.bot_ref }}
+          path: _t3planet_ai_bot
+          persist-credentials: false
+
+      - name: Sync ClickUp from run result
+        continue-on-error: true
+        env:
+          PYTHONDONTWRITEBYTECODE: 1
+          CLICKUP_ENABLED: ${{ inputs.clickup_enabled }}
+          CLICKUP_API_TOKEN: ${{ secrets.CLICKUP_API_TOKEN }}
+          CLICKUP_TEAM_ID: ${{ inputs.clickup_team_id != '' && inputs.clickup_team_id || secrets.CLICKUP_TEAM_ID }}
+          CLICKUP_LIST_ID: ${{ inputs.clickup_list_id != '' && inputs.clickup_list_id || secrets.CLICKUP_LIST_ID }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          RESOLVE_OUTCOME: ${{ needs.resolve.result }}
+          RESULT: ${{ needs.resolve.outputs.result }}
+          BRANCH_NAME: ${{ needs.resolve.outputs.branch }}
+          PR_URL: ${{ needs.resolve.outputs.pr_url }}
+          PR_ALREADY_EXISTS: ${{ needs.resolve.outputs.pr_already_exists }}
+          TRIAGE_SUMMARY: ${{ needs.resolve.outputs.triage_summary }}
+          GITHUB_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: bash _t3planet_ai_bot/scripts/issue_triage/clickup_hook.sh run-summary

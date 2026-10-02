@@ -1,0 +1,67 @@
+name: T3Planet AI Bot ClickUp Sync
+
+on:
+  workflow_call:
+    inputs:
+      bot_ref:
+        description: Git ref of nitsan-technologies/t3planet-ai-bot used to load scripts
+        type: string
+        required: false
+        default: main
+      clickup_enabled:
+        description: Set to true to sync pull request and issue-close events into ClickUp. Off by default.
+        type: string
+        required: false
+        default: "false"
+      clickup_team_id:
+        description: ClickUp workspace (team) id. Used only when clickup_enabled is true.
+        type: string
+        required: false
+        default: ""
+      clickup_list_id:
+        description: ClickUp list id. Used only when clickup_enabled is true.
+        type: string
+        required: false
+        default: ""
+    secrets:
+      CLICKUP_API_TOKEN:
+        required: false
+      CLICKUP_TEAM_ID:
+        required: false
+      CLICKUP_LIST_ID:
+        required: false
+
+permissions:
+  contents: read
+
+# Separate from the issue resolver so a pull request event cannot cancel an AI run.
+concurrency:
+  group: t3planet-clickup-${{ github.repository }}-${{ github.event.issue.number || github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Sync ClickUp tracking
+    if: contains(fromJSON('["true","True","TRUE","1","yes","on"]'), inputs.clickup_enabled)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout T3Planet AI Bot
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: nitsan-technologies/t3planet-ai-bot
+          ref: ${{ inputs.bot_ref }}
+          path: _t3planet_ai_bot
+          persist-credentials: false
+
+      # The event payload is read from GITHUB_EVENT_PATH, not passed through env.
+      - name: Sync ClickUp from GitHub event
+        continue-on-error: true
+        env:
+          PYTHONDONTWRITEBYTECODE: 1
+          CLICKUP_ENABLED: ${{ inputs.clickup_enabled }}
+          CLICKUP_API_TOKEN: ${{ secrets.CLICKUP_API_TOKEN }}
+          CLICKUP_TEAM_ID: ${{ inputs.clickup_team_id != '' && inputs.clickup_team_id || secrets.CLICKUP_TEAM_ID }}
+          CLICKUP_LIST_ID: ${{ inputs.clickup_list_id != '' && inputs.clickup_list_id || secrets.CLICKUP_LIST_ID }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: bash _t3planet_ai_bot/scripts/issue_triage/clickup_hook.sh github-event

@@ -3,8 +3,19 @@ name: T3Planet AI Bot
 on:
   issues:
     types: [opened, labeled]
+    # Opt-in ClickUp issue-close sync: use this list instead, then uncomment
+    # the clickup job below and set clickup_enabled to "true".
+    # types: [opened, labeled, closed]
   issue_comment:
     types: [created]
+  # Optional ClickUp tracking for pull requests. Leave commented to keep
+  # today's triggers. Uncomment these, uncomment the clickup job at the
+  # bottom, and set clickup_enabled to "true" to opt in. The sync job does
+  # not run while clickup_enabled is "false", so it makes no ClickUp calls.
+  # pull_request:
+  #   types: [opened, edited, synchronize, reopened, closed, ready_for_review, converted_to_draft]
+  # pull_request_review:
+  #   types: [submitted, edited]
 
 permissions:
   contents: write
@@ -33,6 +44,31 @@ jobs:
     uses: nitsan-technologies/t3planet-ai-bot/.github/workflows/issue-resolver.yml@main
     secrets:
       CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+      # CLICKUP_API_TOKEN: ${{ secrets.CLICKUP_API_TOKEN }}
     with:
       bot_ref: main
       base_branch: main
+      # ClickUp is off unless this is "true".
+      clickup_enabled: "false"
+      # IDs are not secret; store them as repository variables.
+      # `secrets` cannot be used inside `with:`.
+      # clickup_team_id: ${{ vars.CLICKUP_TEAM_ID }}
+      # clickup_list_id: ${{ vars.CLICKUP_LIST_ID }}
+
+  # clickup:
+  #   if: |
+  #     (
+  #       github.event_name == 'issues' &&
+  #       github.event.action == 'closed' &&
+  #       !github.event.issue.pull_request
+  #     ) ||
+  #     github.event_name == 'pull_request' ||
+  #     github.event_name == 'pull_request_review'
+  #   uses: nitsan-technologies/t3planet-ai-bot/.github/workflows/clickup-sync.yml@main
+  #   secrets:
+  #     CLICKUP_API_TOKEN: ${{ secrets.CLICKUP_API_TOKEN }}
+  #   with:
+  #     bot_ref: main
+  #     clickup_enabled: "true"
+  #     clickup_team_id: ${{ vars.CLICKUP_TEAM_ID }}
+  #     clickup_list_id: ${{ vars.CLICKUP_LIST_ID }}

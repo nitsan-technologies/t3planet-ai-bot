@@ -9,6 +9,8 @@ T3Planet AI Bot reviews GitHub Issues with Cursor, classifies them, asks for mis
 3. For a valid issue, it implements a minimal fix on branch `ai/fix-issue-<number>` and opens a **draft PR**.
 4. A human reviews and merges. The bot does not merge PRs.
 
+ClickUp tracking is optional and **off by default**. The GitHub flow above does not call ClickUp unless you enable it. See [Optional ClickUp tracking](#optional-clickup-tracking).
+
 ## Setup
 
 Do these in **every** repository that uses the bot.
@@ -82,6 +84,8 @@ jobs:
     with:
       bot_ref: main
       base_branch: main
+      # ClickUp tracking stays off unless this is "true". See below.
+      clickup_enabled: "false"
 ```
 
 Copy-paste example: [`examples/caller-workflow.yml`](examples/caller-workflow.yml)
@@ -101,6 +105,91 @@ The bot opens **draft** pull requests only. A human reviews and merges; the bot 
 - **Project rules:** add a local [`AGENTS.md`](AGENTS.md). The bot always loads the bot rules first, then your file if present.
 - **`base_branch`:** set if the default branch is not `main`.
 - **`cursor_agent_version`:** pin or upgrade the Cursor CLI lab build (see Inputs).
+
+
+## Optional ClickUp tracking
+
+ClickUp is **off** unless you turn it on. With the default settings the bot never calls the ClickUp API, and triage, labels, branches, and draft pull requests behave as they do today.
+
+When you enable it, GitHub stays the source of truth and ClickUp only mirrors progress. One GitHub issue maps to one ClickUp task. The bot finds that task only inside the configured list, by:
+
+- the task name prefix `[gh:<owner>/<repo>#<number>]`, or
+- a marker line in the task description, `t3planet-github-issue:<owner>/<repo>#<number>`
+
+The bot does not post ClickUp links on GitHub issues. If the ClickUp API returns an error or is unreachable, the bot logs it and the GitHub workflow continues.
+
+### Security model
+
+- The ClickUp token is used only in a separate job that runs **after** the AI job, on a fresh runner. It is never present on the machine where the AI agent runs.
+- That job reads the AI job's outcome (classification, branch, pull request URL, short summary) from job outputs and validates each value: the branch must be `ai/fix-issue-<number>`, and the pull request URL must belong to the same repository.
+- API calls only go to `https://api.clickup.com`.
+- Pull requests from forks do not sync, because GitHub does not pass secrets to fork pull request runs.
+
+### Settings
+
+| Name | Where | When enabled |
+|------|--------|----------------|
+| `clickup_enabled` | workflow input | Set to `true` to turn tracking on. Default `false`. `1`, `yes`, and `on` also turn it on. Empty, `false`, or any other value leaves it off. |
+| `CLICKUP_API_TOKEN` | Actions secret | Required. A ClickUp personal API token. Never commit it. |
+| `CLICKUP_TEAM_ID` | repository variable passed as input `clickup_team_id` (or a secret with the same name) | Required. The workspace (team) id. |
+| `CLICKUP_LIST_ID` | repository variable passed as input `clickup_list_id` (or a secret with the same name) | Required. The list that should hold the tasks. |
+
+If ClickUp is enabled but any of the token, team id, or list id is missing, the bot skips tracking and does not call the API.
+
+The list should have a status the bot can match, case-insensitively, for **In Progress** (a draft pull request is open) and **Done** (or Complete / Closed). If the list has no matching status, the bot logs that and still adds the comment.
+
+Create the token in ClickUp under **Settings → Apps** and store it as the Actions secret `CLICKUP_API_TOKEN`. Store the ids under **Settings → Secrets and variables → Actions → Variables**.
+
+### Enable
+
+On the caller that already runs the bot:
+
+```yaml
+with:
+  bot_ref: main
+  base_branch: main
+  clickup_enabled: "true"
+  clickup_team_id: ${{ vars.CLICKUP_TEAM_ID }}
+  clickup_list_id: ${{ vars.CLICKUP_LIST_ID }}
+secrets:
+  CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+  CLICKUP_API_TOKEN: ${{ secrets.CLICKUP_API_TOKEN }}
+```
+
+GitHub does not allow `secrets` inside `with:`, so pass the ids as variables (or as secrets under `secrets:`).
+
+### What is synced after each issue run
+
+When the AI job finishes, the ClickUp job records one update:
+
+| Outcome | ClickUp |
+|---------|---------|
+| Valid issue, draft pull request opened (or already open) | Create the task if needed, status In Progress, comment with triage summary, branch, and pull request |
+| Valid issue, fix failed or produced no change | Create the task if needed, comment explaining that no pull request was opened |
+| Needs information / review required | Create the task if needed, comment with the triage summary |
+| Not an issue | No new task. If a task already exists, status Done with a comment |
+| Run failed before triage | Comment on an existing task only |
+
+Comments include the GitHub issue link and the workflow run link. The triage summary is AI-generated and capped at 1000 characters.
+
+### Pull request reviews, merges, and issue close
+
+`issue-resolver.yml` is only called for issue events, so pull request activity is handled by a separate reusable workflow, [`.github/workflows/clickup-sync.yml`](.github/workflows/clickup-sync.yml). It is not used unless a caller opts in, and the job is skipped when `clickup_enabled` is not true.
+
+This workflow **only updates existing tasks**. It never creates one, so closing an old issue or merging an unrelated pull request adds nothing to ClickUp.
+
+- pull request opened, edited, new commits, draft or ready for review → comment with the pull request URL
+- pull request review → comment on the task
+- pull request merged → status Done, plus the merge commit
+- GitHub issue closed → status Done, plus a close comment
+
+A pull request is matched to the issue from the branch `ai/fix-issue-<number>`, or from `Fixes #n` / `Relates to #n` in the pull request title or body. Unlinked pull requests are ignored.
+
+The commented job in [`examples/caller-workflow.yml`](examples/caller-workflow.yml) shows the triggers to uncomment.
+
+### Disable
+
+Set `clickup_enabled` to `"false"`, or stop passing it. You do not need a ClickUp token. Existing ClickUp tasks are left as they are.
 
 ## Tests
 
@@ -134,6 +223,9 @@ Until the first tag exists, keep using `@main`. After tags are cut, switch calle
 | `bot_ref` | `main` | Branch or tag of this repo used to load scripts and rules |
 | `base_branch` | `main` | Default branch of the calling repository |
 | `cursor_agent_version` | `2026.08.25-3e8eec8` | Pinned Cursor agent CLI lab version |
+| `clickup_enabled` | `false` | Set to `true` to mirror progress into ClickUp. Off by default |
+| `clickup_team_id` | empty | ClickUp workspace id. Required only when ClickUp is enabled |
+| `clickup_list_id` | empty | ClickUp list id. Required only when ClickUp is enabled |
 
 ## License
 

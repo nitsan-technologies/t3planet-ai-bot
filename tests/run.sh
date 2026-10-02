@@ -122,6 +122,20 @@ mkdir -p "$TMP/proj_suite/Tests"
   assert_exit "project-tests:suite-no-runner" 1 bash "${SCRIPTS}/run_existing_project_tests.sh"
 )
 
+for suite in clickup_test.py clickup_events_test.py; do
+  echo ""
+  echo "=== ${suite} (mock HTTP, no live API) ==="
+  set +e
+  python3 "${ROOT}/tests/${suite}"
+  SUITE_EXIT=$?
+  set -e
+  if [ "$SUITE_EXIT" -ne 0 ]; then
+    FAIL=$((FAIL + 1))
+  else
+    PASS=$((PASS + 1))
+  fi
+done
+
 echo ""
 echo "===== SUMMARY: ${PASS} passed, ${FAIL} failed ====="
 if [ "$FAIL" -ne 0 ]; then
