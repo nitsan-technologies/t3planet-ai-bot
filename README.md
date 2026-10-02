@@ -5,7 +5,7 @@ T3Planet AI Bot reviews GitHub Issues with Cursor, classifies them, asks for mis
 ## How it works
 
 1. Someone opens an issue (or a collaborator adds the `t3planet-ai` label, or a user replies on an issue labeled `needs-information`).
-2. The bot **triages** the issue: `VALID_ISSUE`, `NOT_AN_ISSUE`, or `NEEDS_INFORMATION`.
+2. The bot **triages** the issue: `VALID_ISSUE`, `NOT_AN_ISSUE`, or `NEEDS_INFORMATION`. If the AI answer has no clear classification, the result is `REVIEW_REQUIRED` and no fix is attempted.
 3. For a valid issue, it implements a minimal fix on branch `ai/fix-issue-<number>` and opens a **draft PR**.
 4. A human reviews and merges. The bot does not merge PRs.
 
@@ -102,7 +102,7 @@ The bot opens **draft** pull requests only. A human reviews and merges; the bot 
 
 ## Optional configuration
 
-- **Project rules:** add a local [`AGENTS.md`](AGENTS.md). The bot always loads the bot rules first, then your file if present.
+- **Project rules:** add an `AGENTS.md` at the root of your repository for project-specific notes (see [`examples/AGENTS.md`](examples/AGENTS.md)). The bot always loads its own rules ([`AGENTS.md`](AGENTS.md)) first, then your file if present.
 - **`base_branch`:** set if the default branch is not `main`.
 - **`cursor_agent_version`:** pin or upgrade the Cursor CLI lab build (see Inputs).
 
@@ -110,6 +110,8 @@ The bot opens **draft** pull requests only. A human reviews and merges; the bot 
 ## Optional ClickUp tracking
 
 ClickUp is **off** unless you turn it on. With the default settings the bot never calls the ClickUp API, and triage, labels, branches, and draft pull requests behave as they do today.
+
+ClickUp tracking is not part of `v1.0.0`. Use a release that includes it (from `v1.1.0`), or `@main` while testing.
 
 When you enable it, GitHub stays the source of truth and ClickUp only mirrors progress. One GitHub issue maps to one ClickUp task. The bot finds that task only inside the configured list, by:
 
@@ -193,14 +195,14 @@ Set `clickup_enabled` to `"false"`, or stop passing it. You do not need a ClickU
 
 ## Tests
 
-- **Bot scripts:** run `bash tests/run.sh` (also runs in CI on this repo).
+- **Bot scripts:** run `bash tests/run.sh` (also runs in CI on this repo). It includes the ClickUp tests, which use a local mock server and never call the real ClickUp API.
 - **Consumer extensions:** if the project already has `Tests/`, `tests/`, or `phpunit.xml`, the bot reviews them by running `vendor/bin/phpunit` (or `phpunit`) after a fix. If a suite exists but phpunit is not installed in the Actions job, the run fails and no PR is opened.
 
 ## Versioning (tags)
 
 `@main` always uses the latest bot code. That is fine for trying things out, but a change on `main` can break callers without warning.
 
-For production, use a **release tag** (for example `v1.0.0`) once tags are published:
+For production, use a **release tag**:
 
 ```yaml
 uses: nitsan-technologies/t3planet-ai-bot/.github/workflows/issue-resolver.yml@v1.0.0
@@ -214,7 +216,9 @@ with:
 | `@main` | Always latest — good for testing |
 | `@v1.0.0` | Fixed release — recommended for production |
 
-Until the first tag exists, keep using `@main`. After tags are cut, switch callers to the tag and bump it when you want upgrades.
+Keep `uses: ...@<ref>` and `bot_ref` on the same value, and bump both when you want an upgrade.
+
+Only pass inputs that exist in the release you use. `v1.0.0` has no `clickup_*` inputs, so remove those lines when pinning it, otherwise GitHub rejects the workflow.
 
 ## Inputs
 
@@ -226,6 +230,15 @@ Until the first tag exists, keep using `@main`. After tags are cut, switch calle
 | `clickup_enabled` | `false` | Set to `true` to mirror progress into ClickUp. Off by default |
 | `clickup_team_id` | empty | ClickUp workspace id. Required only when ClickUp is enabled |
 | `clickup_list_id` | empty | ClickUp list id. Required only when ClickUp is enabled |
+
+## Secrets
+
+| Secret | Required | Description |
+|--------|----------|-------------|
+| `CURSOR_API_KEY` | Yes | Cursor API key used for triage and fixes |
+| `CLICKUP_API_TOKEN` | Only with ClickUp | ClickUp personal API token |
+| `CLICKUP_TEAM_ID` | No | Alternative to the `clickup_team_id` input |
+| `CLICKUP_LIST_ID` | No | Alternative to the `clickup_list_id` input |
 
 ## License
 
