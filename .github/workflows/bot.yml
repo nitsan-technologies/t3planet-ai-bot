@@ -1,0 +1,108 @@
+name: T3Planet AI Bot
+
+# Single entry point for calling repositories. It decides which job an event
+# needs, so callers only list their triggers and settings.
+
+on:
+  workflow_call:
+    inputs:
+      bot_ref:
+        description: Git ref of nitsan-technologies/t3planet-ai-bot used to load scripts. Keep equal to the ref in `uses:`.
+        type: string
+        required: false
+        default: main
+      base_branch:
+        description: Default branch of the calling repository
+        type: string
+        required: false
+        default: main
+      clickup_enabled:
+        description: Set to true to track issues in ClickUp. Off unless explicitly enabled.
+        type: boolean
+        required: false
+        default: false
+      clickup_team_id:
+        description: ClickUp workspace (team) id. Used only when clickup_enabled is true.
+        type: string
+        required: false
+        default: ""
+      clickup_list_id:
+        description: ClickUp list id. Used only when clickup_enabled is true.
+        type: string
+        required: false
+        default: ""
+      clickup_assignees:
+        description: Emails or ClickUp user ids (comma separated) assigned to new ClickUp tasks.
+        type: string
+        required: false
+        default: ""
+    secrets:
+      CURSOR_API_KEY:
+        required: true
+      CLICKUP_API_TOKEN:
+        required: false
+      CLICKUP_TEAM_ID:
+        required: false
+      CLICKUP_LIST_ID:
+        required: false
+
+jobs:
+  resolve:
+    if: |
+      (
+        github.event_name == 'issues' &&
+        github.event.action == 'opened'
+      ) ||
+      (
+        github.event_name == 'issues' &&
+        github.event.action == 'labeled' &&
+        github.event.label.name == 't3planet-ai'
+      ) ||
+      (
+        github.event_name == 'issue_comment' &&
+        !github.event.issue.pull_request &&
+        github.event.comment.user.type != 'Bot' &&
+        contains(github.event.issue.labels.*.name, 'needs-information')
+      )
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    uses: ./.github/workflows/issue-resolver.yml
+    secrets:
+      CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+      CLICKUP_API_TOKEN: ${{ secrets.CLICKUP_API_TOKEN }}
+      CLICKUP_TEAM_ID: ${{ secrets.CLICKUP_TEAM_ID }}
+      CLICKUP_LIST_ID: ${{ secrets.CLICKUP_LIST_ID }}
+    with:
+      bot_ref: ${{ inputs.bot_ref }}
+      base_branch: ${{ inputs.base_branch }}
+      clickup_enabled: ${{ inputs.clickup_enabled && 'true' || 'false' }}
+      clickup_team_id: ${{ inputs.clickup_team_id }}
+      clickup_list_id: ${{ inputs.clickup_list_id }}
+      clickup_assignees: ${{ inputs.clickup_assignees }}
+
+  clickup:
+    if: |
+      inputs.clickup_enabled &&
+      (
+        (
+          github.event_name == 'issues' &&
+          github.event.action == 'closed' &&
+          !github.event.issue.pull_request
+        ) ||
+        github.event_name == 'pull_request' ||
+        github.event_name == 'pull_request_review'
+      )
+    permissions:
+      contents: read
+    uses: ./.github/workflows/clickup-sync.yml
+    secrets:
+      CLICKUP_API_TOKEN: ${{ secrets.CLICKUP_API_TOKEN }}
+      CLICKUP_TEAM_ID: ${{ secrets.CLICKUP_TEAM_ID }}
+      CLICKUP_LIST_ID: ${{ secrets.CLICKUP_LIST_ID }}
+    with:
+      bot_ref: ${{ inputs.bot_ref }}
+      clickup_enabled: ${{ inputs.clickup_enabled && 'true' || 'false' }}
+      clickup_team_id: ${{ inputs.clickup_team_id }}
+      clickup_list_id: ${{ inputs.clickup_list_id }}

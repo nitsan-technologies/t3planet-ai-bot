@@ -37,6 +37,7 @@ class ClickUpConfig:
     team_id: str
     list_id: str
     api_base: str
+    assignees: str = ""
 
 
 def clean(value: Optional[str]) -> str:
@@ -106,6 +107,7 @@ def load_config(env: Optional[Mapping[str, str]] = None) -> Optional[ClickUpConf
         team_id=team_id,
         list_id=list_id,
         api_base=resolve_api_base(source.get("CLICKUP_API_BASE")),
+        assignees=clean(source.get("CLICKUP_ASSIGNEES")),
     )
 
 
@@ -114,7 +116,7 @@ class ClickUpClient:
         self.config = config
         self.timeout = timeout
         self._statuses: Optional[list] = None
-        self._team_ok = False
+        self._team: Optional[dict] = None
 
     def request(
         self,
@@ -170,9 +172,9 @@ class ClickUpClient:
         except json.JSONDecodeError:
             raise ClickUpError(f"ClickUp {method} {path} returned invalid JSON") from None
 
-    def ensure_team(self) -> None:
-        if self._team_ok:
-            return
+    def ensure_team(self) -> dict:
+        if self._team is not None:
+            return self._team
         data = self.request("GET", "/team")
         teams = data.get("teams") if isinstance(data, dict) else None
         if not isinstance(teams, list):
@@ -180,11 +182,15 @@ class ClickUpClient:
         wanted = self.config.team_id
         for team in teams:
             if isinstance(team, dict) and str(team.get("id")) == wanted:
-                self._team_ok = True
-                return
+                self._team = team
+                return team
         raise ClickUpError(
             f"ClickUp team {wanted} is not accessible to this token. Skipping."
         )
+
+    def team_members(self) -> list:
+        members = self.ensure_team().get("members")
+        return members if isinstance(members, list) else []
 
     def get_list(self) -> dict:
         data = self.request("GET", f"/list/{urllib.parse.quote(self.config.list_id)}")
@@ -211,13 +217,15 @@ class ClickUpClient:
                 break
         return tasks
 
-    def create_task(self, name: str, description: str) -> dict:
+    def create_task(self, name: str, description: str, assignees: Optional[list] = None) -> dict:
         body = {
             "name": name,
             "description": description,
             "markdown_content": description,
             "notify_all": False,
         }
+        if assignees:
+            body["assignees"] = list(assignees)
         data = self.request(
             "POST",
             f"/list/{urllib.parse.quote(self.config.list_id)}/task",

@@ -60,35 +60,21 @@ permissions:
   pull-requests: write
 
 jobs:
-  resolve:
-    if: |
-      (
-        github.event_name == 'issues' &&
-        github.event.action == 'opened'
-      ) ||
-      (
-        github.event_name == 'issues' &&
-        github.event.action == 'labeled' &&
-        github.event.label.name == 't3planet-ai'
-      ) ||
-      (
-        github.event_name == 'issue_comment' &&
-        !github.event.issue.pull_request &&
-        github.event.comment.user.type != 'Bot' &&
-        contains(github.event.issue.labels.*.name, 'needs-information')
-      )
+  bot:
     # Prefer a release tag over @main in production (see Versioning below).
-    uses: nitsan-technologies/t3planet-ai-bot/.github/workflows/issue-resolver.yml@main
+    uses: nitsan-technologies/t3planet-ai-bot/.github/workflows/bot.yml@main
     secrets:
       CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
     with:
       bot_ref: main
       base_branch: main
-      # ClickUp tracking stays off unless this is "true". See below.
-      clickup_enabled: "false"
 ```
 
+[`bot.yml`](.github/workflows/bot.yml) is the single entry point. It decides which job each event needs, so the caller only lists its triggers and settings.
+
 Copy-paste example: [`examples/caller-workflow.yml`](examples/caller-workflow.yml)
+
+`bot.yml` is not in `v1.0.0`. With `@v1.0.0`, call `issue-resolver.yml` directly and keep the trigger conditions in the caller, as shown in that release's README.
 
 ## When the bot runs
 
@@ -131,34 +117,55 @@ The bot does not post ClickUp links on GitHub issues. If the ClickUp API returns
 
 | Name | Where | When enabled |
 |------|--------|----------------|
-| `clickup_enabled` | workflow input | Set to `true` to turn tracking on. Default `false`. `1`, `yes`, and `on` also turn it on. Empty, `false`, or any other value leaves it off. |
+| `clickup_enabled` | workflow input | Set to `true` to turn tracking on. Default `false`. In `bot.yml` it is a boolean. When calling `issue-resolver.yml` directly it is a string, where `"true"`, `"1"`, `"yes"`, and `"on"` turn it on. |
 | `CLICKUP_API_TOKEN` | Actions secret | Required. A ClickUp personal API token. Never commit it. |
 | `CLICKUP_TEAM_ID` | repository variable passed as input `clickup_team_id` (or a secret with the same name) | Required. The workspace (team) id. |
 | `CLICKUP_LIST_ID` | repository variable passed as input `clickup_list_id` (or a secret with the same name) | Required. The list that should hold the tasks. |
+| `CLICKUP_ASSIGNEES` | repository variable passed as input `clickup_assignees` | Optional. Emails or ClickUp user ids, comma separated (up to 10), assigned to each new task. |
 
 If ClickUp is enabled but any of the token, team id, or list id is missing, the bot skips tracking and does not call the API.
 
 The list should have a status the bot can match, case-insensitively, for **In Progress** (a draft pull request is open) and **Done** (or Complete / Closed). If the list has no matching status, the bot logs that and still adds the comment.
 
-Create the token in ClickUp under **Settings → Apps** and store it as the Actions secret `CLICKUP_API_TOKEN`. Store the ids under **Settings → Secrets and variables → Actions → Variables**.
+Create the token in ClickUp under **Settings → Apps** and store it as the Actions secret `CLICKUP_API_TOKEN`. Store the ids and assignees under **Settings → Secrets and variables → Actions → Variables**.
+
+### Assignees
+
+Assignees are set only when the bot **creates** a task. Later runs never change them, so a person you reassign in ClickUp stays assigned.
+
+Each entry must be a member of the workspace: an email (matched case-insensitively) or a numeric ClickUp user id. Entries that match nobody are skipped and logged with the email masked. If ClickUp still rejects the assignees, the bot creates the task unassigned. The token's own user is not assigned unless you list it.
 
 ### Enable
 
-On the caller that already runs the bot:
+On the caller that already runs the bot, add the triggers and settings:
 
 ```yaml
-with:
-  bot_ref: main
-  base_branch: main
-  clickup_enabled: "true"
-  clickup_team_id: ${{ vars.CLICKUP_TEAM_ID }}
-  clickup_list_id: ${{ vars.CLICKUP_LIST_ID }}
-secrets:
-  CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
-  CLICKUP_API_TOKEN: ${{ secrets.CLICKUP_API_TOKEN }}
+on:
+  issues:
+    types: [opened, labeled, closed]
+  issue_comment:
+    types: [created]
+  pull_request:
+    types: [opened, edited, synchronize, reopened, closed, ready_for_review, converted_to_draft]
+  pull_request_review:
+    types: [submitted, edited]
+
+jobs:
+  bot:
+    uses: nitsan-technologies/t3planet-ai-bot/.github/workflows/bot.yml@main
+    secrets:
+      CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+      CLICKUP_API_TOKEN: ${{ secrets.CLICKUP_API_TOKEN }}
+    with:
+      bot_ref: main
+      base_branch: main
+      clickup_enabled: true
+      clickup_team_id: ${{ vars.CLICKUP_TEAM_ID }}
+      clickup_list_id: ${{ vars.CLICKUP_LIST_ID }}
+      clickup_assignees: ${{ vars.CLICKUP_ASSIGNEES }}
 ```
 
-GitHub does not allow `secrets` inside `with:`, so pass the ids as variables (or as secrets under `secrets:`).
+GitHub does not allow `secrets` inside `with:`, so pass the ids as variables (or as secrets under `secrets:`). The pull request and issue-close triggers are only needed for ClickUp.
 
 ### What is synced after each issue run
 
@@ -176,7 +183,7 @@ Comments include the GitHub issue link and the workflow run link. The triage sum
 
 ### Pull request reviews, merges, and issue close
 
-`issue-resolver.yml` is only called for issue events, so pull request activity is handled by a separate reusable workflow, [`.github/workflows/clickup-sync.yml`](.github/workflows/clickup-sync.yml). It is not used unless a caller opts in, and the job is skipped when `clickup_enabled` is not true.
+`bot.yml` sends pull request events and issue closes to a separate reusable workflow, [`.github/workflows/clickup-sync.yml`](.github/workflows/clickup-sync.yml). That job is skipped when `clickup_enabled` is not true.
 
 This workflow **only updates existing tasks**. It never creates one, so closing an old issue or merging an unrelated pull request adds nothing to ClickUp.
 
@@ -187,11 +194,13 @@ This workflow **only updates existing tasks**. It never creates one, so closing 
 
 A pull request is matched to the issue from the branch `ai/fix-issue-<number>`, or from `Fixes #n` / `Relates to #n` in the pull request title or body. Unlinked pull requests are ignored.
 
-The commented job in [`examples/caller-workflow.yml`](examples/caller-workflow.yml) shows the triggers to uncomment.
+The commented triggers in [`examples/caller-workflow.yml`](examples/caller-workflow.yml) show what to uncomment.
+
+The bot's own draft pull request does not start a sync run, because GitHub does not trigger workflows for pull requests opened with the workflow token. Its link reaches ClickUp through the issue run instead.
 
 ### Disable
 
-Set `clickup_enabled` to `"false"`, or stop passing it. You do not need a ClickUp token. Existing ClickUp tasks are left as they are.
+Set `clickup_enabled` to `false`, or stop passing it. You do not need a ClickUp token. Existing ClickUp tasks are left as they are.
 
 ## Tests
 
@@ -202,25 +211,27 @@ Set `clickup_enabled` to `"false"`, or stop passing it. You do not need a ClickU
 
 `@main` always uses the latest bot code. That is fine for trying things out, but a change on `main` can break callers without warning.
 
-For production, use a **release tag**:
+For production, use a **release tag**. `v1.1.0` is the first release planned to include `bot.yml` and ClickUp:
 
 ```yaml
-uses: nitsan-technologies/t3planet-ai-bot/.github/workflows/issue-resolver.yml@v1.0.0
+uses: nitsan-technologies/t3planet-ai-bot/.github/workflows/bot.yml@v1.1.0
 with:
-  bot_ref: v1.0.0
+  bot_ref: v1.1.0
   base_branch: main
 ```
 
 | Ref | Meaning |
 |-----|---------|
 | `@main` | Always latest — good for testing |
-| `@v1.0.0` | Fixed release — recommended for production |
+| `@v1.1.0` | Fixed release — recommended for production |
 
 Keep `uses: ...@<ref>` and `bot_ref` on the same value, and bump both when you want an upgrade.
 
-Only pass inputs that exist in the release you use. `v1.0.0` has no `clickup_*` inputs, so remove those lines when pinning it, otherwise GitHub rejects the workflow.
+Only use files and inputs that exist in the release you pin. `v1.0.0` has no `bot.yml` and no `clickup_*` inputs, so GitHub rejects a caller that uses them with that tag.
 
 ## Inputs
+
+These are the inputs of `bot.yml`. `cursor_agent_version` is only available when calling `issue-resolver.yml` directly.
 
 | Input | Default | Description |
 |-------|---------|-------------|
@@ -230,6 +241,7 @@ Only pass inputs that exist in the release you use. `v1.0.0` has no `clickup_*` 
 | `clickup_enabled` | `false` | Set to `true` to mirror progress into ClickUp. Off by default |
 | `clickup_team_id` | empty | ClickUp workspace id. Required only when ClickUp is enabled |
 | `clickup_list_id` | empty | ClickUp list id. Required only when ClickUp is enabled |
+| `clickup_assignees` | empty | Emails or ClickUp user ids, comma separated, assigned to new ClickUp tasks |
 
 ## Secrets
 

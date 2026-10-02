@@ -93,10 +93,15 @@ class MockClickUp:
             {"status": "In Progress", "type": "custom"},
             {"status": "Done", "type": "closed"},
         ]
+        self.members = [
+            {"user": {"id": 101, "username": "Dev One", "email": "dev.one@example.com"}},
+            {"user": {"id": 202, "username": "Dev Two", "email": "Dev.Two@Example.com"}},
+        ]
         self.tasks = {}
         self.comments = []
         self.hits = []
         self.fail_create = False
+        self.reject_assignees = False
         self.seq = 0
         self._httpd = None
         self._thread = None
@@ -163,7 +168,7 @@ class MockClickUp:
 
     def route(self, method, rel, body):
         if method == "GET" and rel == "/team":
-            return 200, {"teams": [{"id": self.team_id, "name": "Workspace"}]}
+            return 200, {"teams": [{"id": self.team_id, "name": "Workspace", "members": self.members}]}
         if method == "GET" and rel == "/list/list1":
             return 200, {"id": "list1", "statuses": self.statuses}
         if method == "GET" and rel == "/list/list1/task":
@@ -171,8 +176,13 @@ class MockClickUp:
         if method == "POST" and rel == "/list/list1/task":
             if self.fail_create:
                 return 500, {"err": "create failed"}
+            known = {m["user"]["id"] for m in self.members}
+            wanted = body.get("assignees") or []
+            if wanted and (self.reject_assignees or any(uid not in known for uid in wanted)):
+                return 400, {"err": "Assignee not found"}
             self.seq += 1
             task = make_task("cu%s" % self.seq, body.get("name"), body.get("description") or "")
+            task["assignees"] = [{"id": uid} for uid in wanted]
             self.tasks[task["id"]] = task
             return 200, task
         parts = rel.split("/")

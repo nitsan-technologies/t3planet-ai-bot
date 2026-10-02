@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
+import clickup_assignees
 from clickup_client import ClickUpClient, ClickUpError
 
 BOILERPLATE = "GitHub is the source of truth. This ClickUp task only tracks progress."
@@ -165,9 +166,34 @@ def plan_meta(plan: Plan, existing: str) -> dict:
     return meta
 
 
+def assignee_ids(client: ClickUpClient) -> list:
+    spec = clickup_assignees.parse_spec(client.config.assignees)
+    if not spec:
+        return []
+    try:
+        ids, unknown = clickup_assignees.resolve(spec, client.team_members())
+    except ClickUpError as exc:
+        print("ClickUp assignee lookup failed: %s" % exc)
+        return []
+    if unknown:
+        print(
+            "ClickUp skipped assignees that are not workspace members: %s"
+            % ", ".join(clickup_assignees.mask(entry) for entry in unknown)
+        )
+    return ids
+
+
 def create_task(client: ClickUpClient, issue: IssueRef, plan: Plan) -> dict:
     description = render_description(issue, issue.title, plan_meta(plan, ""), "")
-    created = client.create_task(task_name(issue, issue.title), description)
+    name = task_name(issue, issue.title)
+    assignees = assignee_ids(client)
+    try:
+        created = client.create_task(name, description, assignees)
+    except ClickUpError as exc:
+        if not assignees or exc.status not in {400, 403}:
+            raise
+        print("ClickUp rejected the assignees (%s); creating the task unassigned." % exc)
+        created = client.create_task(name, description)
     if not created.get("id"):
         raise ClickUpError("ClickUp create task returned no id")
     created.setdefault("description", description)

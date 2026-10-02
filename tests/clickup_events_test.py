@@ -172,13 +172,23 @@ def test_wiring():
     for name, text in (("example", example), ("readme", readme)):
         check("wiring:no-secrets-in-with:%s" % name, "clickup_team_id: ${{ secrets" not in text
               and "clickup_list_id: ${{ secrets" not in text)
-    check("wiring:example-off", 'clickup_enabled: "false"' in example)
+    check("wiring:example-off", "clickup_enabled: false" in example and "workflows/bot.yml@" in example)
     check("wiring:no-github-marker", "t3planet-clickup-task" not in readme + resolver)
+    entry = (ROOT / ".github/workflows/bot.yml").read_text(encoding="utf-8")
+    entry_sync = job_block(entry, "clickup")
+    check("wiring:entry-default-off", "type: boolean" in entry.split("clickup_enabled:", 1)[1][:200]
+          and "default: false" in entry.split("clickup_enabled:", 1)[1][:200])
+    check("wiring:entry-local-calls", "uses: ./.github/workflows/issue-resolver.yml" in entry
+          and "uses: ./.github/workflows/clickup-sync.yml" in entry)
+    check("wiring:entry-sync-read-only", "contents: read" in entry_sync and "write" not in entry_sync)
+    check("wiring:entry-sync-gated", "inputs.clickup_enabled &&" in entry_sync)
+    check("wiring:entry-no-inherit", "secrets: inherit" not in entry)
+    check("wiring:assignees-only-on-create", "CLICKUP_ASSIGNEES" in clickup_job and "assignees" not in sync)
     joined = "".join(p.read_text(encoding="utf-8") for p in SCRIPTS.glob("clickup_*.py"))
-    check("wiring:no-hardcoded-token", "pk_" not in joined + resolver + sync + example)
+    check("wiring:no-hardcoded-token", "pk_" not in joined + resolver + sync + example + entry)
     if shutil.which("ruby"):
         for path in (ROOT / ".github/workflows/issue-resolver.yml", ROOT / ".github/workflows/clickup-sync.yml",
-                     ROOT / "examples/caller-workflow.yml"):
+                     ROOT / ".github/workflows/bot.yml", ROOT / "examples/caller-workflow.yml"):
             result = subprocess.run(["ruby", "-ryaml", "-e", "YAML.load_file(ARGV[0])", str(path)],
                                     capture_output=True, text=True)
             check("yaml:%s" % path.name, result.returncode == 0, result.stderr[-300:])

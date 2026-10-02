@@ -122,7 +122,7 @@ mkdir -p "$TMP/proj_suite/Tests"
   assert_exit "project-tests:suite-no-runner" 1 bash "${SCRIPTS}/run_existing_project_tests.sh"
 )
 
-for suite in clickup_test.py clickup_events_test.py; do
+for suite in clickup_test.py clickup_events_test.py clickup_assignees_test.py; do
   echo ""
   echo "=== ${suite} (mock HTTP, no live API) ==="
   set +e
