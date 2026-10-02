@@ -26,12 +26,13 @@ jobs:
     secrets:
       CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
       # CLICKUP_API_TOKEN: ${{ secrets.CLICKUP_API_TOKEN }}
+      # Emails are personal data; a secret is masked in workflow logs.
+      # CLICKUP_ASSIGNEES: ${{ secrets.CLICKUP_ASSIGNEES }}
     with:
       bot_ref: main
       base_branch: main
       # ClickUp is off unless this is true. `secrets` cannot be used inside
-      # `with:`, so the ids and assignees are repository variables.
+      # `with:`, so the ids are repository variables.
       clickup_enabled: false
       # clickup_team_id: ${{ vars.CLICKUP_TEAM_ID }}
       # clickup_list_id: ${{ vars.CLICKUP_LIST_ID }}
-      # clickup_assignees: ${{ vars.CLICKUP_ASSIGNEES }}

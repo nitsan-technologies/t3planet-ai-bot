@@ -11,6 +11,15 @@ T3Planet AI Bot reviews GitHub Issues with Cursor, classifies them, asks for mis
 
 ClickUp tracking is optional and **off by default**. The GitHub flow above does not call ClickUp unless you enable it. See [Optional ClickUp tracking](#optional-clickup-tracking).
 
+**Contents:** [Requirements](#requirements) · [Setup](#setup) · [When the bot runs](#when-the-bot-runs) · [Optional ClickUp tracking](#optional-clickup-tracking) · [Privacy and data](#privacy-and-data) · [Troubleshooting](#troubleshooting) · [Versioning](#versioning-tags) · [Inputs](#inputs) · [Secrets](#secrets)
+
+## Requirements
+
+- A GitHub repository with GitHub Actions enabled. The bot runs on GitHub-hosted `ubuntu-latest` runners.
+- A Cursor account with an API key.
+- Optional: a ClickUp workspace and a personal API token, only if you use ClickUp tracking.
+- Private repositories: the bot repository is public, so no extra access setting is needed.
+
 ## Setup
 
 Do these in **every** repository that uses the bot.
@@ -76,6 +85,15 @@ Copy-paste example: [`examples/caller-workflow.yml`](examples/caller-workflow.ym
 
 `bot.yml` is not in `v1.0.0`. With `@v1.0.0`, call `issue-resolver.yml` directly and keep the trigger conditions in the caller, as shown in that release's README.
 
+### 4. Labels
+
+- `needs-information` is created by the bot the first time it needs it.
+- `t3planet-ai` is the retry label. Create it once under **Issues → Labels → New label** if you want collaborators to be able to re-run the bot on an issue.
+
+### 5. Check it works
+
+Open a test issue that describes a small, clear bug. Within a few minutes the **Actions** tab shows a run, and the issue gets a bot comment with the triage result. For a valid issue, a draft pull request from `ai/fix-issue-<number>` follows.
+
 ## When the bot runs
 
 | Trigger | Behavior |
@@ -121,19 +139,43 @@ The bot does not post ClickUp links on GitHub issues. If the ClickUp API returns
 | `CLICKUP_API_TOKEN` | Actions secret | Required. A ClickUp personal API token. Never commit it. |
 | `CLICKUP_TEAM_ID` | repository variable passed as input `clickup_team_id` (or a secret with the same name) | Required. The workspace (team) id. |
 | `CLICKUP_LIST_ID` | repository variable passed as input `clickup_list_id` (or a secret with the same name) | Required. The list that should hold the tasks. |
-| `CLICKUP_ASSIGNEES` | repository variable passed as input `clickup_assignees` | Optional. Emails or ClickUp user ids, comma separated (up to 10), assigned to each new task. |
+| `CLICKUP_ASSIGNEES` | Actions secret (recommended) or repository variable passed as input `clickup_assignees` | Optional. Emails or ClickUp user ids, comma separated (up to 10), assigned to each new task. |
 
 If ClickUp is enabled but any of the token, team id, or list id is missing, the bot skips tracking and does not call the API.
 
-The list should have a status the bot can match, case-insensitively, for **In Progress** (a draft pull request is open) and **Done** (or Complete / Closed). If the list has no matching status, the bot logs that and still adds the comment.
+### Set up ClickUp step by step
 
-Create the token in ClickUp under **Settings → Apps** and store it as the Actions secret `CLICKUP_API_TOKEN`. Store the ids and assignees under **Settings → Secrets and variables → Actions → Variables**.
+1. **Token.** In ClickUp open your avatar → **Settings → Apps → API Token** and generate a token. In the GitHub repository, add it under **Settings → Secrets and variables → Actions → Secrets** as `CLICKUP_API_TOKEN`. Tasks and comments are created as the user who owns the token, so a shared service account is a good choice.
+2. **Team id.** Open ClickUp in the browser. The first number in the URL is the workspace (team) id, for example `https://app.clickup.com/<team_id>/home`. Add it under **Variables** as `CLICKUP_TEAM_ID`.
+3. **List id.** Open the list that should hold the tasks. The number after `/li/` in the URL is the list id, for example `https://app.clickup.com/<team_id>/v/li/<list_id>`. Add it under **Variables** as `CLICKUP_LIST_ID`.
+4. **Statuses.** The list needs a status the bot can match, case-insensitively, for **In Progress** (or Doing) and **Done** (or Complete / Closed). If there is no match, the bot logs the statuses it found and still adds the comment.
+5. **Assignees (optional).** See [Assignees](#assignees).
+6. **Workflow.** Update the caller as shown in [Enable](#enable).
 
 ### Assignees
 
-Assignees are set only when the bot **creates** a task. Later runs never change them, so a person you reassign in ClickUp stays assigned.
+Set `CLICKUP_ASSIGNEES` to the people who should own new tasks, for example:
 
-Each entry must be a member of the workspace: an email (matched case-insensitively) or a numeric ClickUp user id. Entries that match nobody are skipped and logged with the email masked. If ClickUp still rejects the assignees, the bot creates the task unassigned. The token's own user is not assigned unless you list it.
+```text
+dev@example.com, 12345678
+```
+
+- Each entry is either the **email a person uses to log in to ClickUp** (case does not matter) or their numeric **ClickUp user id**. Members and their emails are listed in ClickUp under **Settings → People**.
+- Every entry must be a member of the workspace in `CLICKUP_TEAM_ID`. Entries that match nobody are skipped and logged with the email masked, for example `d***@example.com`.
+- If ClickUp still rejects the assignees, the bot creates the task unassigned instead of failing.
+- Assignees are set only when the bot **creates** a task. Later runs never change them, so a person you reassign in ClickUp stays assigned.
+- The token's own user is not assigned unless you list it.
+
+**Store it as a secret.** GitHub shows repository variables in plain text in workflow logs, and logs of public repositories are public. A secret named `CLICKUP_ASSIGNEES` is masked in logs. Pass it under `secrets:` and leave out the `clickup_assignees` input:
+
+```yaml
+secrets:
+  CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+  CLICKUP_API_TOKEN: ${{ secrets.CLICKUP_API_TOKEN }}
+  CLICKUP_ASSIGNEES: ${{ secrets.CLICKUP_ASSIGNEES }}
+```
+
+If both are set, the `clickup_assignees` input wins.
 
 ### Enable
 
@@ -156,16 +198,18 @@ jobs:
     secrets:
       CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
       CLICKUP_API_TOKEN: ${{ secrets.CLICKUP_API_TOKEN }}
+      CLICKUP_ASSIGNEES: ${{ secrets.CLICKUP_ASSIGNEES }}
     with:
       bot_ref: main
       base_branch: main
       clickup_enabled: true
       clickup_team_id: ${{ vars.CLICKUP_TEAM_ID }}
       clickup_list_id: ${{ vars.CLICKUP_LIST_ID }}
-      clickup_assignees: ${{ vars.CLICKUP_ASSIGNEES }}
 ```
 
 GitHub does not allow `secrets` inside `with:`, so pass the ids as variables (or as secrets under `secrets:`). The pull request and issue-close triggers are only needed for ClickUp.
+
+To check the setup, open a test issue. The run's **Sync ClickUp tracking** job log shows each ClickUp call, and the task appears in the list as `[gh:<owner>/<repo>#<number>] <issue title>`.
 
 ### What is synced after each issue run
 
@@ -202,6 +246,31 @@ The bot's own draft pull request does not start a sync run, because GitHub does 
 
 Set `clickup_enabled` to `false`, or stop passing it. You do not need a ClickUp token. Existing ClickUp tasks are left as they are.
 
+## Privacy and data
+
+- **Cursor:** the issue title, body, and comments, plus the repository code, are sent to Cursor for triage and fixes.
+- **GitHub:** the bot writes comments, labels, a branch, and a draft pull request. It never posts ClickUp links, ids, or assignee details on GitHub.
+- **ClickUp (only when enabled):** the task holds the issue title and link, the classification, the branch, the pull request link, and a short AI summary (at most 1000 characters). The issue body is not copied.
+- **Logs:** tokens and secrets are masked. Assignee emails printed by the bot are masked. Repository variables are shown in plain text, so keep personal data such as emails in secrets.
+- **Docs and examples:** use placeholders such as `dev@example.com` and `<team_id>`. Never commit real tokens, emails, or ids.
+
+## Troubleshooting
+
+| Symptom | Likely cause |
+|---------|--------------|
+| Run fails when pushing or opening the pull request | Workflow permissions are read-only. See [Setup step 1](#1-allow-github-actions-to-write-to-the-repo). |
+| Run fails at the Cursor step | `CURSOR_API_KEY` is missing, misspelled, or expired. |
+| GitHub rejects the workflow with an unknown input or file | The pinned tag is older than that feature. See [Versioning](#versioning-tags). |
+| No run for pull request events | The caller does not list the `pull_request` / `pull_request_review` triggers. |
+| Log: `ClickUp disabled; skipping` | `clickup_enabled` is not `true`. |
+| Log: `ClickUp enabled but missing required settings` | The token secret, team id, or list id is not set or not passed to the workflow. |
+| Log: `team ... is not accessible to this token` | The team id is wrong, or the token's user is not in that workspace. |
+| Log: `ClickUp list has no status for ...` | Add an In Progress / Done status to the list. The comment is still added. |
+| Log: `skipped assignees that are not workspace members` | The email is not the person's ClickUp login, or they are not a member. Check **Settings → People** in ClickUp. |
+| No ClickUp comment for the bot's own draft pull request | Expected. GitHub does not trigger workflows for pull requests opened with the workflow token. The link is added by the issue run. |
+
+A green run does not prove ClickUp worked. ClickUp errors never fail the job, so check the **Sync ClickUp tracking** job log.
+
 ## Tests
 
 - **Bot scripts:** run `bash tests/run.sh` (also runs in CI on this repo). It includes the ClickUp tests, which use a local mock server and never call the real ClickUp API.
@@ -231,17 +300,22 @@ Only use files and inputs that exist in the release you pin. `v1.0.0` has no `bo
 
 ## Inputs
 
-These are the inputs of `bot.yml`. `cursor_agent_version` is only available when calling `issue-resolver.yml` directly.
+Inputs of `bot.yml`:
 
-| Input | Default | Description |
-|-------|---------|-------------|
-| `bot_ref` | `main` | Branch or tag of this repo used to load scripts and rules |
-| `base_branch` | `main` | Default branch of the calling repository |
-| `cursor_agent_version` | `2026.08.25-3e8eec8` | Pinned Cursor agent CLI lab version |
-| `clickup_enabled` | `false` | Set to `true` to mirror progress into ClickUp. Off by default |
-| `clickup_team_id` | empty | ClickUp workspace id. Required only when ClickUp is enabled |
-| `clickup_list_id` | empty | ClickUp list id. Required only when ClickUp is enabled |
-| `clickup_assignees` | empty | Emails or ClickUp user ids, comma separated, assigned to new ClickUp tasks |
+| Input | Type | Default | Description |
+|-------|------|---------|-------------|
+| `bot_ref` | string | `main` | Branch or tag of this repo used to load scripts and rules. Keep equal to the ref in `uses:` |
+| `base_branch` | string | `main` | Default branch of the calling repository |
+| `clickup_enabled` | boolean | `false` | Set to `true` to mirror progress into ClickUp |
+| `clickup_team_id` | string | empty | ClickUp workspace id. Required only when ClickUp is enabled |
+| `clickup_list_id` | string | empty | ClickUp list id. Required only when ClickUp is enabled |
+| `clickup_assignees` | string | empty | Emails or ClickUp user ids, comma separated, assigned to new ClickUp tasks. Prefer the `CLICKUP_ASSIGNEES` secret |
+
+When calling `issue-resolver.yml` directly, the same inputs exist, except that `clickup_enabled` is a string, plus:
+
+| Input | Type | Default | Description |
+|-------|------|---------|-------------|
+| `cursor_agent_version` | string | `2026.08.25-3e8eec8` | Pinned Cursor agent CLI lab version |
 
 ## Secrets
 
@@ -251,6 +325,7 @@ These are the inputs of `bot.yml`. `cursor_agent_version` is only available when
 | `CLICKUP_API_TOKEN` | Only with ClickUp | ClickUp personal API token |
 | `CLICKUP_TEAM_ID` | No | Alternative to the `clickup_team_id` input |
 | `CLICKUP_LIST_ID` | No | Alternative to the `clickup_list_id` input |
+| `CLICKUP_ASSIGNEES` | No | Alternative to the `clickup_assignees` input. Masked in logs, so recommended for emails |
 
 ## License
 
