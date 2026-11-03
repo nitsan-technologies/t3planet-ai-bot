@@ -144,18 +144,22 @@ def current_status(task: dict) -> str:
 def find_task(client: ClickUpClient, issue: IssueRef):
     """Return (task or None, allow_create).
 
-    allow_create is false when the scan cannot prove the issue has no task.
-    Creating in that case would duplicate a task that sits past the page cap.
+    Pages newest-first and stops early on a match, so large lists still work.
+    If the page cap is hit with no match, create is still allowed: a bot task
+    for this issue would be recent and would have appeared in those pages.
     """
-    pages, complete = client.list_task_pages()
+    pages, complete = client.list_task_pages(
+        newest_first=True,
+        stop_when=lambda batch: any(task_matches(task, issue) for task in batch),
+    )
     matches = [task for page in pages for task in page if task_matches(task, issue)]
     if not matches:
         if not complete:
             print(
-                "ClickUp task lookup for %s#%s is incomplete; not creating a task."
+                "ClickUp task lookup for %s#%s hit the page cap with no match; "
+                "creating a task on this large list."
                 % (issue.repo, issue.number)
             )
-            return None, False
         return None, True
     matches.sort(key=lambda task: str(task.get("date_created") or ""))
     if len(matches) > 1:

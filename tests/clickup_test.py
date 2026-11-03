@@ -233,30 +233,33 @@ def _filler(count):
 
 
 @with_mock
-def test_page_cap_does_not_create(mock, base):
-    hidden = make_task("hidden", "[gh:acme/widgets#12] Login broken")
+def test_page_cap_still_creates_on_large_list(mock, base):
+    # Newest-first: 10 full pages of noise, no match → still create.
     mock.task_pages = [_filler(100) for _ in range(12)]
-    mock.task_pages[-1] = [hidden]
     result = run_sync(["run-summary"], valid_pr_env(base))
-    listed = [h for h in mock.hits if h["path"] == "/list/list1/task"]
-    check("cap:no-create", mock.creates() == [] and len(mock.tasks) == 0, result.stdout)
-    check("cap:logged", "incomplete" in result.stdout and "not creating" in result.stdout, result.stdout)
-    check("cap:ten-pages", len(listed) == 10, str(len(listed)))
-    check("cap:oldest-first", listed and listed[0]["query"].get("order_by") == ["created"])
+    listed = [h for h in mock.hits if h["method"] == "GET" and h["path"] == "/list/list1/task"]
+    pages = [int((h.get("query") or {}).get("page", ["0"])[0]) for h in listed]
+    check("cap:created", len(mock.creates()) == 1 and len(mock.tasks) == 1, result.stdout)
+    check("cap:logged", "page cap with no match" in result.stdout and "creating a task" in result.stdout, result.stdout)
+    check("cap:ten-pages", pages == list(range(10)), str(pages))
+    check("cap:newest-first", listed and listed[0]["query"].get("reverse") == ["true"])
 
 
 @with_mock
-def test_match_past_first_page_is_updated(mock, base):
+def test_match_on_later_page_stops_early(mock, base):
     target = make_task(
-        "cu-old",
+        "cu-new",
         "[gh:acme/widgets#12] Login broken",
         "t3planet-github-issue:acme/widgets#12\n",
     )
-    mock.tasks["cu-old"] = target
-    mock.task_pages = [_filler(100), _filler(100), [target]]
+    mock.tasks["cu-new"] = target
+    # Page 0-1 noise, page 2 match; must not keep scanning or create.
+    mock.task_pages = [_filler(100), _filler(100), [target]] + [_filler(100) for _ in range(5)]
     result = run_sync(["run-summary"], valid_pr_env(base))
+    listed = [h for h in mock.hits if h["method"] == "GET" and h["path"] == "/list/list1/task"]
     check("later-page:no-second-task", result.returncode == 0 and mock.creates() == [], result.stdout)
     check("later-page:comment", "AI triage: VALID_ISSUE" in mock.comment_text(), mock.comment_text())
+    check("later-page:stopped-early", len(listed) == 3, str(len(listed)))
 
 
 def test_hook_never_fails():
@@ -288,8 +291,8 @@ def main() -> int:
         test_missing_status_still_comments,
         test_get_errors_are_retried,
         test_rate_limit_then_creates,
-        test_page_cap_does_not_create,
-        test_match_past_first_page_is_updated,
+        test_page_cap_still_creates_on_large_list,
+        test_match_on_later_page_stops_early,
         test_hook_never_fails,
     ):
         test()

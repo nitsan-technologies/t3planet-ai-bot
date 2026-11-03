@@ -264,28 +264,38 @@ class ClickUpClient:
         data = self.request("GET", f"/list/{urllib.parse.quote(self.config.list_id)}")
         return data if isinstance(data, dict) else {}
 
-    def list_task_pages(self, max_pages: int = TASK_PAGE_CAP):
-        """Page this list, oldest first.
+    def list_task_pages(
+        self,
+        max_pages: int = TASK_PAGE_CAP,
+        newest_first: bool = True,
+        stop_when=None,
+    ):
+        """Page this list. Newest first by default.
 
-        ClickUp has no name search. The list id is the filter, and created
-        order keeps an existing mirror near the start. Returns (pages, complete).
-        complete is false when the page cap or an error stops the scan early,
-        which means a missing task must not be created.
+        ClickUp has no name search, so the list id is the only server filter.
+        Newest-first keeps recent bot mirrors in the first pages on large lists.
+        stop_when(batch) may end the scan early when a match is already found.
+        Returns (pages, complete). complete is false when the page cap or an
+        error stops the scan early.
         """
         pages = []
         complete = False
         list_id = urllib.parse.quote(self.config.list_id)
+        query = {
+            "page": 0,
+            "include_closed": "true",
+            "subtasks": "true",
+            "order_by": "created",
+        }
+        if newest_first:
+            query["reverse"] = "true"
         for page in range(max_pages):
+            query["page"] = page
             try:
                 data = self.request(
                     "GET",
                     "/list/%s/task" % list_id,
-                    query={
-                        "page": page,
-                        "include_closed": "true",
-                        "subtasks": "true",
-                        "order_by": "created",
-                    },
+                    query=query,
                 )
             except ClickUpError as exc:
                 print("ClickUp task lookup stopped: %s" % exc)
@@ -296,6 +306,8 @@ class ClickUpClient:
             raw = data.get("tasks")
             batch = [item for item in raw or [] if isinstance(item, dict)]
             pages.append(batch)
+            if stop_when and stop_when(batch):
+                return pages, True
             if not batch or data.get("last_page") is True or len(batch) < TASK_PAGE_SIZE:
                 complete = True
                 break

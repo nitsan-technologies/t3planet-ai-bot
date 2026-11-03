@@ -231,7 +231,7 @@ When the AI job finishes, the ClickUp job records one update:
 | Needs information / review required | Create the task if needed, comment with the triage summary |
 | Not an issue | No new task. If a task already exists, status Done with a comment |
 | Run failed before triage | Comment on an existing task only |
-| Task lookup stopped early (page cap or ClickUp error) and no match was seen | No new task. Creating one could duplicate a task the scan did not reach |
+| Task lookup hits the page cap with no match on a large list | Create a new task. Lookup scans newest tasks first, so an existing bot task for this issue would already have been found |
 
 Comments include the GitHub issue link and the workflow run link. The triage summary is AI-generated and capped at 1000 characters.
 
