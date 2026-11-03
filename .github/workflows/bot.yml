@@ -16,6 +16,11 @@ on:
         type: string
         required: false
         default: main
+      cursor_agent_version:
+        description: Pinned Cursor agent CLI lab version (downloads.cursor.com/lab/<version>/...)
+        type: string
+        required: false
+        default: "2026.08.25-3e8eec8"
       clickup_enabled:
         description: Set to true to track issues in ClickUp. Off unless explicitly enabled.
         type: boolean
@@ -80,6 +85,7 @@ jobs:
     with:
       bot_ref: ${{ inputs.bot_ref }}
       base_branch: ${{ inputs.base_branch }}
+      cursor_agent_version: ${{ inputs.cursor_agent_version }}
       clickup_enabled: ${{ inputs.clickup_enabled && 'true' || 'false' }}
       clickup_team_id: ${{ inputs.clickup_team_id }}
       clickup_list_id: ${{ inputs.clickup_list_id }}

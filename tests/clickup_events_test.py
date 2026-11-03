@@ -98,6 +98,27 @@ def test_events_update_existing_task():
         mock.stop()
 
 
+def test_only_meaningful_pr_actions_comment():
+    mock = MockClickUp()
+    base = mock.start()
+    try:
+        mock.tasks["cu7"] = make_task(
+            "cu7", "[gh:acme/widgets#7] Login broken", "t3planet-github-issue:acme/widgets#7\n", "In Progress"
+        )
+        for action in ("synchronize", "edited", "reopened", "converted_to_draft"):
+            mock.comments.clear()
+            result = run_event(base, "pull_request", pr_payload(action=action, merged=False))
+            check("quiet:%s" % action, mock.comments == [] and "skipped comment" in result.stdout, result.stdout)
+        mock.comments.clear()
+        run_event(base, "pull_request", pr_payload(action="opened", merged=False))
+        check("opened:comment", "Pull request opened:" in mock.comment_text(), mock.comment_text())
+        mock.comments.clear()
+        run_event(base, "pull_request", pr_payload(action="ready_for_review", merged=False))
+        check("ready:comment", "ready for review:" in mock.comment_text(), mock.comment_text())
+    finally:
+        mock.stop()
+
+
 def test_events_never_create_tasks():
     mock = MockClickUp()
     base = mock.start()
@@ -183,6 +204,8 @@ def test_wiring():
           and "default: false" in entry.split("clickup_enabled:", 1)[1][:200])
     check("wiring:entry-local-calls", "uses: ./.github/workflows/issue-resolver.yml" in entry
           and "uses: ./.github/workflows/clickup-sync.yml" in entry)
+    check("wiring:forwards-cursor-version", "cursor_agent_version:" in entry.split("jobs:", 1)[0]
+          and "cursor_agent_version: ${{ inputs.cursor_agent_version }}" in job_block(entry, "resolve"))
     check("wiring:entry-sync-read-only", "contents: read" in entry_sync and "write" not in entry_sync)
     check("wiring:entry-sync-gated", "inputs.clickup_enabled &&" in entry_sync)
     check("wiring:entry-no-inherit", "secrets: inherit" not in entry)
@@ -200,6 +223,7 @@ def test_wiring():
 def main() -> int:
     test_link_parsing()
     test_events_update_existing_task()
+    test_only_meaningful_pr_actions_comment()
     test_events_never_create_tasks()
     test_export_run_summary()
     test_wiring()

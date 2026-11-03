@@ -85,6 +85,7 @@ def test_failures_exit_zero():
         out = result.stdout + result.stderr
         check("auth-error:redacted", result.returncode == 0 and "super-secret-token" not in out and "[redacted]" in out, out[-300:])
         check("auth-error:no-create", mock.creates() == [])
+        check("auth-error:no-retry", len([h for h in mock.hits if h["path"] == "/team"]) == 1)
     finally:
         mock.stop()
 
@@ -94,6 +95,7 @@ def test_failures_exit_zero():
     try:
         result = run_sync(["run-summary"], valid_pr_env(base))
         check("http-500:exit-0", result.returncode == 0 and "HTTP 500" in result.stdout, result.stdout)
+        check("http-500:create-not-retried", len(mock.creates()) == 1 and "retrying" not in result.stdout, result.stdout)
     finally:
         mock.stop()
 
@@ -209,6 +211,54 @@ def test_missing_status_still_comments(mock, base):
     check("missing-status:comment", "Draft pull request" in mock.comment_text())
 
 
+@with_mock
+def test_get_errors_are_retried(mock, base):
+    mock.transient_get_failures = 2
+    result = run_sync(["run-summary"], valid_pr_env(base))
+    team_gets = [h for h in mock.hits if h["method"] == "GET" and h["path"] == "/team"]
+    check("get-500:retried", len(team_gets) == 3 and "retrying" in result.stdout, result.stdout)
+    check("get-500:then-created", result.returncode == 0 and len(mock.tasks) == 1, result.stdout)
+
+
+@with_mock
+def test_rate_limit_then_creates(mock, base):
+    mock.transient_failures = 2
+    result = run_sync(["run-summary"], valid_pr_env(base))
+    check("retry:created", result.returncode == 0 and len(mock.tasks) == 1, result.stdout)
+    check("retry:two-429s", len(mock.creates()) == 3 and "HTTP 429" in result.stdout, result.stdout)
+
+
+def _filler(count):
+    return [make_task("n%s" % i, "noise %s" % i) for i in range(count)]
+
+
+@with_mock
+def test_page_cap_does_not_create(mock, base):
+    hidden = make_task("hidden", "[gh:acme/widgets#12] Login broken")
+    mock.task_pages = [_filler(100) for _ in range(12)]
+    mock.task_pages[-1] = [hidden]
+    result = run_sync(["run-summary"], valid_pr_env(base))
+    listed = [h for h in mock.hits if h["path"] == "/list/list1/task"]
+    check("cap:no-create", mock.creates() == [] and len(mock.tasks) == 0, result.stdout)
+    check("cap:logged", "incomplete" in result.stdout and "not creating" in result.stdout, result.stdout)
+    check("cap:ten-pages", len(listed) == 10, str(len(listed)))
+    check("cap:oldest-first", listed and listed[0]["query"].get("order_by") == ["created"])
+
+
+@with_mock
+def test_match_past_first_page_is_updated(mock, base):
+    target = make_task(
+        "cu-old",
+        "[gh:acme/widgets#12] Login broken",
+        "t3planet-github-issue:acme/widgets#12\n",
+    )
+    mock.tasks["cu-old"] = target
+    mock.task_pages = [_filler(100), _filler(100), [target]]
+    result = run_sync(["run-summary"], valid_pr_env(base))
+    check("later-page:no-second-task", result.returncode == 0 and mock.creates() == [], result.stdout)
+    check("later-page:comment", "AI triage: VALID_ISSUE" in mock.comment_text(), mock.comment_text())
+
+
 def test_hook_never_fails():
     tmp = tempfile.mkdtemp(prefix="clickup-hook-")
     try:
@@ -236,6 +286,10 @@ def main() -> int:
         test_spoofed_outputs_are_ignored,
         test_cannot_hijack_other_tasks,
         test_missing_status_still_comments,
+        test_get_errors_are_retried,
+        test_rate_limit_then_creates,
+        test_page_cap_does_not_create,
+        test_match_past_first_page_is_updated,
         test_hook_never_fails,
     ):
         test()

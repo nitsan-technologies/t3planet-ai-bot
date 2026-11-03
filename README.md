@@ -124,6 +124,7 @@ ClickUp is a **status board only**:
 - Changing, reassigning, or closing a task in ClickUp does nothing to GitHub. Review and merge stay on the pull request.
 - The AI job does not know ClickUp exists. It finishes first, on its own runner. The ClickUp job starts afterwards, on a fresh runner, with read-only GitHub permissions.
 - A ClickUp error, timeout, or missing setting is logged and ignored. It does not fail the workflow, hide an AI result, or block a pull request. Pull request events use a separate job, so they cannot cancel an AI run.
+- A rate limit (HTTP 429) is retried twice, and so is a failed read. A failed create, update, or comment is not retried, so one error cannot write the same task or comment twice.
 
 When you enable it, GitHub stays the source of truth. One GitHub issue maps to one ClickUp task. The bot finds that task only inside the configured list, by:
 
@@ -196,7 +197,7 @@ on:
   issue_comment:
     types: [created]
   pull_request:
-    types: [opened, edited, synchronize, reopened, closed, ready_for_review, converted_to_draft]
+    types: [opened, ready_for_review, closed]
   pull_request_review:
     types: [submitted, edited]
 
@@ -230,6 +231,7 @@ When the AI job finishes, the ClickUp job records one update:
 | Needs information / review required | Create the task if needed, comment with the triage summary |
 | Not an issue | No new task. If a task already exists, status Done with a comment |
 | Run failed before triage | Comment on an existing task only |
+| Task lookup stopped early (page cap or ClickUp error) and no match was seen | No new task. Creating one could duplicate a task the scan did not reach |
 
 Comments include the GitHub issue link and the workflow run link. The triage summary is AI-generated and capped at 1000 characters.
 
@@ -239,10 +241,13 @@ Comments include the GitHub issue link and the workflow run link. The triage sum
 
 This workflow **only updates existing tasks**. It never creates one, so closing an old issue or merging an unrelated pull request adds nothing to ClickUp.
 
-- pull request opened, edited, new commits, draft or ready for review → comment with the pull request URL
+- pull request opened (including a draft) or marked ready for review → comment with the pull request URL
 - pull request review → comment on the task
 - pull request merged → status Done, plus the merge commit
+- pull request closed without merge → comment
 - GitHub issue closed → status Done, plus a close comment
+
+New commits, title edits, reopen, and draft conversion do not add a comment. A pull request that is pushed often would otherwise write one ClickUp comment per push. If a caller still sends those events, the sync logs that the action is not recorded.
 
 A pull request is matched to the issue from the branch `ai/fix-issue-<number>`, or from `Fixes #n` / `Relates to #n` in the pull request title or body. Unlinked pull requests are ignored.
 
@@ -314,16 +319,13 @@ Inputs of `bot.yml`:
 |-------|------|---------|-------------|
 | `bot_ref` | string | `main` | Branch or tag of this repo used to load scripts and rules. Keep equal to the ref in `uses:` |
 | `base_branch` | string | `main` | Default branch of the calling repository |
+| `cursor_agent_version` | string | `2026.08.25-3e8eec8` | Pinned Cursor agent CLI lab version. `bot.yml` forwards it to the AI job |
 | `clickup_enabled` | boolean | `false` | Set to `true` to mirror progress into ClickUp |
 | `clickup_team_id` | string | empty | ClickUp workspace id. Required only when ClickUp is enabled |
 | `clickup_list_id` | string | empty | ClickUp list id. Required only when ClickUp is enabled |
 | `clickup_assignees` | string | empty | Emails or ClickUp user ids, comma separated, assigned to new ClickUp tasks. Prefer the `CLICKUP_ASSIGNEES` secret |
 
-When calling `issue-resolver.yml` directly, the same inputs exist, except that `clickup_enabled` is a string, plus:
-
-| Input | Type | Default | Description |
-|-------|------|---------|-------------|
-| `cursor_agent_version` | string | `2026.08.25-3e8eec8` | Pinned Cursor agent CLI lab version |
+`issue-resolver.yml` accepts the same inputs. Its `clickup_enabled` value is a string (`"true"`, `"1"`, `"yes"`, or `"on"`).
 
 ## Secrets
 

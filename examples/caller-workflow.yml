@@ -10,7 +10,7 @@ on:
   # ClickUp only: uncomment to mirror pull request activity into ClickUp.
   # Without ClickUp these events would only start runs that skip every job.
   # pull_request:
-  #   types: [opened, edited, synchronize, reopened, closed, ready_for_review, converted_to_draft]
+  #   types: [opened, ready_for_review, closed]
   # pull_request_review:
   #   types: [submitted, edited]
 
@@ -31,6 +31,7 @@ jobs:
     with:
       bot_ref: main
       base_branch: main
+      # cursor_agent_version: "2026.08.25-3e8eec8"
       # ClickUp is off unless this is true. `secrets` cannot be used inside
       # `with:`, so the ids are repository variables.
       clickup_enabled: false

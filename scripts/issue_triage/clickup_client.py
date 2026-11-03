@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -25,10 +26,18 @@ _TEST_HOSTS = {"127.0.0.1", "localhost"}
 _TRUTHY = {"1", "true", "yes", "on"}
 
 
+_RETRYABLE = {429, 500, 502, 503, 504}
+_DEFAULT_RETRY_DELAYS = (1.0, 2.0)
+_RETRY_AFTER_CAP = 8.0
+TASK_PAGE_CAP = 10
+TASK_PAGE_SIZE = 100
+
+
 class ClickUpError(Exception):
-    def __init__(self, message: str, status: Optional[int] = None) -> None:
+    def __init__(self, message: str, status: Optional[int] = None, retry_after: Optional[float] = None) -> None:
         super().__init__(message)
         self.status = status
+        self.retry_after = retry_after
 
 
 @dataclass(frozen=True)
@@ -65,6 +74,33 @@ def resolve_api_base(value: Optional[str]) -> str:
         "or a local test server is allowed."
     )
     return DEFAULT_API_BASE
+
+
+def retry_delays(env: Optional[Mapping[str, str]] = None) -> tuple:
+    """Seconds to wait before each retry. CLICKUP_RETRY_DELAYS overrides this in tests."""
+    source = os.environ if env is None else env
+    raw = clean(source.get("CLICKUP_RETRY_DELAYS"))
+    if not raw:
+        return _DEFAULT_RETRY_DELAYS
+    values = []
+    for part in raw.split(","):
+        try:
+            values.append(min(_RETRY_AFTER_CAP, max(0.0, float(part))))
+        except ValueError:
+            continue
+    return tuple(values[:4]) or _DEFAULT_RETRY_DELAYS
+
+
+def _can_retry(method: str, exc: "ClickUpError") -> bool:
+    if exc.status == 429:
+        return True
+    return method.upper() == "GET" and exc.status in _RETRYABLE
+
+
+def retry_after_seconds(header: Optional[str]) -> Optional[float]:
+    if header and header.strip().isdigit():
+        return min(_RETRY_AFTER_CAP, float(header.strip()))
+    return None
 
 
 def redact(message: str, token: str) -> str:
@@ -125,6 +161,33 @@ class ClickUpClient:
         body: Optional[dict] = None,
         query: Optional[dict] = None,
     ) -> Any:
+        """Call the ClickUp API.
+
+        HTTP 429 is retried for every call. HTTP 5xx is retried for GET only:
+        a create or comment that failed with 500 may already have been saved.
+        """
+        delays = retry_delays()
+        for attempt, delay in enumerate(delays):
+            try:
+                return self._request_once(method, path, body, query)
+            except ClickUpError as exc:
+                if not _can_retry(method, exc):
+                    raise
+                wait = delay if exc.retry_after is None else exc.retry_after
+                print(
+                    "ClickUp %s %s failed with HTTP %s; retrying in %ss (%s/%s)."
+                    % (method, path, exc.status, wait, attempt + 1, len(delays))
+                )
+                time.sleep(wait)
+        return self._request_once(method, path, body, query)
+
+    def _request_once(
+        self,
+        method: str,
+        path: str,
+        body: Optional[dict] = None,
+        query: Optional[dict] = None,
+    ) -> Any:
         url = self.config.api_base + path
         if query:
             parts = []
@@ -161,7 +224,12 @@ class ClickUpClient:
             message = f"ClickUp {method} {path} failed with HTTP {exc.code}"
             if detail:
                 message += ": " + detail
-            raise ClickUpError(redact(message, self.config.token), status=exc.code) from None
+            headers = getattr(exc, "headers", None)
+            raise ClickUpError(
+                redact(message, self.config.token),
+                status=exc.code,
+                retry_after=retry_after_seconds(headers.get("Retry-After") if headers else None),
+            ) from None
         except urllib.error.URLError as exc:
             reason = redact(str(exc.reason), self.config.token)
             raise ClickUpError(f"ClickUp {method} {path} failed: {reason}") from None
@@ -196,26 +264,44 @@ class ClickUpClient:
         data = self.request("GET", f"/list/{urllib.parse.quote(self.config.list_id)}")
         return data if isinstance(data, dict) else {}
 
-    def list_tasks(self, max_pages: int = 10) -> list:
-        tasks = []
+    def list_task_pages(self, max_pages: int = TASK_PAGE_CAP):
+        """Page this list, oldest first.
+
+        ClickUp has no name search. The list id is the filter, and created
+        order keeps an existing mirror near the start. Returns (pages, complete).
+        complete is false when the page cap or an error stops the scan early,
+        which means a missing task must not be created.
+        """
+        pages = []
+        complete = False
         list_id = urllib.parse.quote(self.config.list_id)
         for page in range(max_pages):
-            data = self.request(
-                "GET",
-                f"/list/{list_id}/task",
-                query={
-                    "page": page,
-                    "include_closed": "true",
-                    "subtasks": "true",
-                },
-            )
-            batch = data.get("tasks") if isinstance(data, dict) else None
-            if not batch:
+            try:
+                data = self.request(
+                    "GET",
+                    "/list/%s/task" % list_id,
+                    query={
+                        "page": page,
+                        "include_closed": "true",
+                        "subtasks": "true",
+                        "order_by": "created",
+                    },
+                )
+            except ClickUpError as exc:
+                print("ClickUp task lookup stopped: %s" % exc)
+                return pages, False
+            if not isinstance(data, dict):
+                print("ClickUp task lookup stopped: response was not an object.")
+                return pages, False
+            raw = data.get("tasks")
+            batch = [item for item in raw or [] if isinstance(item, dict)]
+            pages.append(batch)
+            if not batch or data.get("last_page") is True or len(batch) < TASK_PAGE_SIZE:
+                complete = True
                 break
-            tasks.extend(item for item in batch if isinstance(item, dict))
-            if data.get("last_page") is True or len(batch) < 100:
-                break
-        return tasks
+        if not complete:
+            print("ClickUp task lookup stopped after %s full pages." % len(pages))
+        return pages, complete
 
     def create_task(self, name: str, description: str, assignees: Optional[list] = None) -> dict:
         body = {

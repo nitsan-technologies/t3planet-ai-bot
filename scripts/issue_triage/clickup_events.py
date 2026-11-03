@@ -20,13 +20,11 @@ ISSUE_LINK = re.compile(
     r"(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?|relates to)\s+#(\d+)\b"
 )
 BRANCH_LINK = re.compile(r"ai/fix-issue-(\d+)")
-PR_LABELS = {
+# New commits (synchronize) and edits do not add a comment. A busy pull
+# request would otherwise post one ClickUp comment per push.
+COMMENT_ACTIONS = {
     "opened": "Pull request opened",
-    "edited": "Pull request updated",
-    "synchronize": "New commits were pushed to the pull request",
-    "reopened": "Pull request reopened",
     "ready_for_review": "Pull request is ready for review",
-    "converted_to_draft": "Pull request converted to draft",
 }
 
 
@@ -106,14 +104,16 @@ def pull_request_plan(event: str, action: str, payload: dict, repo: str):
         return ref, Plan(comment=text, status_kind="done", pr_url=pr_url or None)
     if action == "closed":
         return ref, Plan(comment="Pull request closed without merge: %s" % pr_url)
-    label = PR_LABELS.get(action, "Pull request event %s" % (action or "unknown"))
+    label = COMMENT_ACTIONS.get(action)
+    if label is None:
+        print(
+            "ClickUp sync skipped comment: pull request action %s is not recorded."
+            % (action or "unknown")
+        )
+        return None
     if action == "opened" and pr.get("draft"):
         label = "Draft pull request opened"
-    text = "%s: %s" % (label, pr_url)
-    head_sha = (pr.get("head") or {}).get("sha") or ""
-    if action == "synchronize" and head_sha:
-        text += "\nHead: %s" % head_sha
-    return ref, Plan(comment=text, pr_url=pr_url or None)
+    return ref, Plan(comment="%s: %s" % (label, pr_url), pr_url=pr_url or None)
 
 
 def build_plan(env: Mapping[str, str]) -> Optional[Tuple[IssueRef, Plan]]:

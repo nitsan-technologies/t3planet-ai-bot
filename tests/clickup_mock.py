@@ -55,6 +55,7 @@ def enabled_env(api_base: str, **extra) -> dict:
         "ISSUE_NUMBER": "12",
         "ISSUE_TITLE": "Login broken",
         "GITHUB_RUN_URL": "https://github.com/acme/widgets/actions/runs/1",
+        "CLICKUP_RETRY_DELAYS": "0,0",
     }
     data.update(extra)
     return base_env(data)
@@ -101,6 +102,9 @@ class MockClickUp:
         self.comments = []
         self.hits = []
         self.fail_create = False
+        self.transient_failures = 0
+        self.transient_get_failures = 0
+        self.task_pages = None
         self.reject_assignees = False
         self.seq = 0
         self._httpd = None
@@ -158,7 +162,7 @@ class MockClickUp:
                 if auth != mock.token:
                     self._send(401, {"err": "Token invalid %s" % (auth or "")})
                     return
-                self._send(*mock.route(method, rel, body))
+                self._send(*mock.route(method, rel, body, parse_qs(parsed.query)))
 
         self._httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
@@ -166,16 +170,30 @@ class MockClickUp:
         host, port = self._httpd.server_address
         return "http://%s:%s/api/v2" % (host, port)
 
-    def route(self, method, rel, body):
+    def route(self, method, rel, body, query=None):
+        if method == "GET" and self.transient_get_failures:
+            self.transient_get_failures -= 1
+            return 500, {"err": "unavailable"}
         if method == "GET" and rel == "/team":
             return 200, {"teams": [{"id": self.team_id, "name": "Workspace", "members": self.members}]}
         if method == "GET" and rel == "/list/list1":
             return 200, {"id": "list1", "statuses": self.statuses}
         if method == "GET" and rel == "/list/list1/task":
+            if self.task_pages is not None:
+                page = int((query or {}).get("page", ["0"])[0] or 0)
+                if page >= len(self.task_pages):
+                    return 200, {"tasks": [], "last_page": True}
+                return 200, {
+                    "tasks": self.task_pages[page],
+                    "last_page": page >= len(self.task_pages) - 1,
+                }
             return 200, {"tasks": list(self.tasks.values()), "last_page": True}
         if method == "POST" and rel == "/list/list1/task":
             if self.fail_create:
                 return 500, {"err": "create failed"}
+            if self.transient_failures:
+                self.transient_failures -= 1
+                return 429, {"err": "rate limit"}
             known = {m["user"]["id"] for m in self.members}
             wanted = body.get("assignees") or []
             if wanted and (self.reject_assignees or any(uid not in known for uid in wanted)):

@@ -141,17 +141,29 @@ def current_status(task: dict) -> str:
     return status if isinstance(status, str) else ""
 
 
-def find_task(client: ClickUpClient, issue: IssueRef) -> Optional[dict]:
-    matches = [task for task in client.list_tasks() if task_matches(task, issue)]
+def find_task(client: ClickUpClient, issue: IssueRef):
+    """Return (task or None, allow_create).
+
+    allow_create is false when the scan cannot prove the issue has no task.
+    Creating in that case would duplicate a task that sits past the page cap.
+    """
+    pages, complete = client.list_task_pages()
+    matches = [task for page in pages for task in page if task_matches(task, issue)]
     if not matches:
-        return None
+        if not complete:
+            print(
+                "ClickUp task lookup for %s#%s is incomplete; not creating a task."
+                % (issue.repo, issue.number)
+            )
+            return None, False
+        return None, True
     matches.sort(key=lambda task: str(task.get("date_created") or ""))
     if len(matches) > 1:
         print(
             "ClickUp found %s tasks for %s#%s; using the oldest (%s)."
             % (len(matches), issue.repo, issue.number, matches[0].get("id"))
         )
-    return matches[0]
+    return matches[0], False
 
 
 def plan_meta(plan: Plan, existing: str) -> dict:
@@ -228,10 +240,11 @@ def resolve_status(client: ClickUpClient, kind: Optional[str]) -> Optional[str]:
 
 
 def execute(client: ClickUpClient, issue: IssueRef, plan: Plan) -> None:
-    task = find_task(client, issue)
+    task, allow_create = find_task(client, issue)
     if task is None:
-        if not plan.create:
-            print("ClickUp has no task for %s#%s; nothing to update." % (issue.repo, issue.number))
+        if not allow_create or not plan.create:
+            if allow_create:
+                print("ClickUp has no task for %s#%s; nothing to update." % (issue.repo, issue.number))
             return
         task = create_task(client, issue, plan)
     task_id = str(task.get("id") or "")
